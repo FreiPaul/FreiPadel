@@ -149,7 +149,7 @@
     {#if showFilters}
         <AvailabilityFilters
             onSaved={() => {
-                showFilters = false;
+                // showFilters = false;
                 loading = true;
                 load();
             }}
