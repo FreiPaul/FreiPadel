@@ -1,0 +1,18 @@
+services:
+  freipadel:
+    build: .
+    # Tag the built image explicitly so `make ship-local-build` can push a
+    # pre-built image and have `docker compose up` (no --build) pick it up.
+    image: freipadel:latest
+    container_name: freipadel
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # SQLite database + scraper config.json live here
+      - ./data:/data
+    environment:
+      # How often to re-scrape court availability
+      SCRAPE_INTERVAL_MINUTES: "30"
+      # Set to "1" when serving over HTTPS (e.g. behind a reverse proxy)
+      COOKIE_SECURE: "0"

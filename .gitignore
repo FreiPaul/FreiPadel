@@ -1,0 +1,24 @@
+# build artifacts
+backend/freipadel
+backend/static/
+frontend/build/
+frontend/.svelte-kit/
+frontend/node_modules/
+
+# runtime data (SQLite db, scraper config)
+data/
+backend/data/
+
+# legacy/private python scraper (ported to Go in backend/scraper)
+logic/
+
+# Claude Code project settings
+.claude/
+
+# private scrape connectors — kept out of this repo. Drop *.private.go files
+# into backend/scraper/ (copy or symlink) for a real deployment; without them
+# the app falls back to the built-in mock source.
+backend/scraper/*.private.go
+
+# misc
+.DS_Store
