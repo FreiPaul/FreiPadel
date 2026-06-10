@@ -58,7 +58,23 @@
                 <span class="text-lg font-semibold tracking-tight"
                     >FreiPadel</span
                 >
-                <div class="ml-auto">
+                <div class="ml-auto flex items-center gap-3">
+                    {#if sync.ready && !sync.live}
+                        <span
+                            class="flex items-center gap-1.5 text-xs text-amber-500"
+                            title="Connection to the server lost — data on screen may be stale"
+                        >
+                            <span
+                                class="size-2 animate-pulse rounded-full bg-amber-500"
+                            ></span>
+                            reconnecting…
+                        </span>
+                    {:else if sync.ready}
+                        <span
+                            class="size-2 rounded-full bg-green-500"
+                            title="Live — changes from others appear instantly"
+                        ></span>
+                    {/if}
                     <ThemeToggle />
                 </div>
             </div>

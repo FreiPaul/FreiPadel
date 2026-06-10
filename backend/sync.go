@@ -472,7 +472,9 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 	}
 	flusher.Flush()
 
-	keepalive := time.NewTicker(25 * time.Second)
+	// A real `ping` event (not an SSE comment) so the client can run a
+	// staleness watchdog — comments are invisible to the EventSource API.
+	keepalive := time.NewTicker(5 * time.Second)
 	defer keepalive.Stop()
 	for {
 		select {
@@ -491,7 +493,7 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 			writeSSE(w, ev)
 			flusher.Flush()
 		case <-keepalive.C:
-			fmt.Fprint(w, ": ping\n\n")
+			fmt.Fprint(w, "event: ping\ndata: {}\n\n")
 			flusher.Flush()
 		}
 	}
