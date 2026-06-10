@@ -203,6 +203,20 @@ func (a *App) triggerScrape() bool {
 }
 
 func (a *App) scrapeLoop(interval time.Duration) {
+	// on startup: respect last_fetched_at from database
+	lastScraped := getMeta(a.db, "last_fetched_at")
+	lastScrapedTime, err := time.Parse(time.RFC3339, lastScraped)
+	if err == nil {
+		a.mu.Lock()
+		a.lastScrape = lastScrapedTime
+		a.mu.Unlock()
+		sinceLastScrape := time.Since(lastScrapedTime)
+		if sinceLastScrape > 0 && sinceLastScrape < interval {
+			log.Printf("waiting %s until next scrape", (interval - sinceLastScrape).Round(time.Second))
+			time.Sleep(interval - sinceLastScrape)
+		}
+	}
+
 	for {
 		a.triggerScrape()
 		time.Sleep(interval)
