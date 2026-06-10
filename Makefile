@@ -33,6 +33,8 @@ ship:
 	@echo "→ syncing source to $(SHIP_HOST):$(SHIP_DIR)"
 	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR) && find $(SHIP_DIR) -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +'
 	tar -czf - $(TAR_EXCLUDES) . | ssh $(SHIP_HOST) 'tar -xzf - -C $(SHIP_DIR)'
+	@echo "→ installing prod compose config (COOKIE_SECURE=1)"
+	ssh $(SHIP_HOST) 'mv $(SHIP_DIR)/docker-compose-prod.yml $(SHIP_DIR)/docker-compose.yml'
 	@echo "→ building & starting on $(SHIP_HOST)"
 	ssh $(SHIP_HOST) '$(BACKUP_CMD)'
 	ssh $(SHIP_HOST) 'cd $(SHIP_DIR) && docker compose up -d --build'
@@ -45,9 +47,9 @@ ship:
 ship-local-build:
 	@echo "→ building linux/amd64 image locally"
 	docker buildx build --platform linux/amd64 -t freipadel:latest --load .
-	@echo "→ syncing compose config to $(SHIP_HOST):$(SHIP_DIR)"
+	@echo "→ syncing prod compose config (COOKIE_SECURE=1) to $(SHIP_HOST):$(SHIP_DIR)"
 	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR)'
-	scp docker-compose.yml $(SHIP_HOST):$(SHIP_DIR)/docker-compose.yml
+	scp docker-compose-prod.yml $(SHIP_HOST):$(SHIP_DIR)/docker-compose.yml
 	@echo "→ shipping image (docker save | ssh | docker load)"
 	docker save freipadel:latest | gzip | ssh $(SHIP_HOST) 'gunzip | docker load'
 	@echo "→ backing up db & starting on $(SHIP_HOST)"
