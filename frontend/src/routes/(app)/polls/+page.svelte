@@ -1,7 +1,18 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { api, PLAYERS_NEEDED, type Poll, type PollSlot } from "$lib/api";
+    import { PLAYERS_NEEDED } from "$lib/api";
     import { auth } from "$lib/auth.svelte";
+    import {
+        castVote,
+        closePoll,
+        deletePoll,
+        slotAvailable,
+        slotVotes,
+        sync,
+        type SyncPoll,
+        type SyncPollSlot,
+        type SyncVote,
+    } from "$lib/sync.svelte";
     import { Badge } from "$lib/components/ui/badge";
     import { Button } from "$lib/components/ui/button";
     import * as Card from "$lib/components/ui/card";
@@ -11,48 +22,88 @@
     import { formatDate, formatTimeRange } from "$lib/format";
     import { toast } from "svelte-sonner";
 
-    let polls = $state<Poll[]>([]);
-    let loading = $state(true);
+    // View models: sync entities enriched with the fields the markup needs,
+    // all derived client-side from the store.
+    type SlotView = SyncPollSlot & {
+        votes: SyncVote[];
+        yes_count: number;
+        no_count: number;
+        my_vote: boolean | null;
+        available: boolean;
+        expired: boolean;
+    };
+    type PollView = Omit<SyncPoll, "slots"> & { slots: SlotView[] };
 
-    let closeTarget = $state<Poll | null>(null);
-    let winnerID = $state<number | null>(null);
-
-    const active = $derived(polls.filter((p) => p.status === "active"));
-    const closed = $derived(polls.filter((p) => p.status === "closed"));
-
-    async function load() {
-        try {
-            polls = await api.get<Poll[]>("/api/polls");
-        } catch {
-            toast.error("Could not load polls");
-        } finally {
-            loading = false;
-        }
-    }
-
+    // Clock for "expired" — refreshed every 30 s so slots flip without a reload.
+    let now = $state(new Date());
     onMount(() => {
-        load();
-        // Keep votes fresh while the tab is open.
-        const id = setInterval(load, 10_000);
+        const id = setInterval(() => (now = new Date()), 30_000);
         return () => clearInterval(id);
     });
+    const today = $derived(
+        `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`,
+    );
+    const nowTime = $derived(
+        `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+    );
 
-    async function vote(poll: Poll, slot: PollSlot, value: boolean) {
+    function enrich(p: SyncPoll): PollView {
+        const slots = p.slots.map((s) => {
+            const votes = slotVotes(s.id);
+            const mine = votes.find((v) => v.user_id === auth.user?.id);
+            const expired =
+                s.date < today || (s.date === today && s.time <= nowTime);
+            return {
+                ...s,
+                votes,
+                yes_count: votes.filter((v) => v.vote).length,
+                no_count: votes.filter((v) => !v.vote).length,
+                my_vote: mine ? mine.vote : null,
+                expired,
+                available:
+                    !expired &&
+                    slotAvailable(s) &&
+                    !s.court.toLowerCase().includes("single"),
+            };
+        });
+        return { ...p, slots };
+    }
+
+    const polls = $derived(
+        Object.values(sync.polls)
+            .map(enrich)
+            .sort((a, b) =>
+                a.status === b.status
+                    ? b.created_at.localeCompare(a.created_at)
+                    : a.status === "active"
+                      ? -1
+                      : 1,
+            ),
+    );
+    const active = $derived(polls.filter((p) => p.status === "active"));
+    const closed = $derived(polls.filter((p) => p.status === "closed"));
+    const loading = $derived(!sync.ready);
+
+    let closeTargetId = $state<number | null>(null);
+    let winnerID = $state<number | null>(null);
+    // Derived from the live store, so the dialog updates while votes come in.
+    const closeTarget = $derived(
+        polls.find((p) => p.id === closeTargetId) ?? null,
+    );
+
+    async function vote(poll: PollView, slot: SlotView, value: boolean) {
+        if (!auth.user) return;
         // Clicking the same answer again clears the vote.
         const newVote = slot.my_vote === value ? null : value;
         try {
-            await api.post(`/api/polls/${poll.id}/vote`, {
-                poll_slot_id: slot.id,
-                vote: newVote,
-            });
-            await load();
+            await castVote(poll.id, slot.id, newVote, auth.user);
         } catch {
             toast.error("Could not save your vote");
         }
     }
 
-    function openClose(poll: Poll) {
-        closeTarget = poll;
+    function openClose(poll: PollView) {
+        closeTargetId = poll.id;
         // Preselect the best slot if one is playable.
         const best = [...poll.slots].sort(
             (a, b) => b.yes_count - a.yes_count,
@@ -61,35 +112,31 @@
     }
 
     async function confirmClose() {
-        if (!closeTarget) return;
+        if (closeTargetId === null) return;
         try {
-            await api.post(`/api/polls/${closeTarget.id}/close`, {
-                winning_slot_id: winnerID,
-            });
+            await closePoll(closeTargetId, winnerID);
             toast.success("Poll closed");
-            closeTarget = null;
-            await load();
+            closeTargetId = null;
         } catch {
             toast.error("Could not close the poll");
         }
     }
 
-    async function deletePoll(poll: Poll) {
+    async function removePoll(poll: PollView) {
         if (!confirm(`Delete poll “${poll.title}”?`)) return;
         try {
-            await api.del(`/api/polls/${poll.id}`);
-            await load();
+            await deletePoll(poll.id);
         } catch {
             toast.error("Could not delete the poll");
         }
     }
 
-    function canManage(poll: Poll): boolean {
+    function canManage(poll: PollView): boolean {
         return auth.user?.id === poll.creator_id || !!auth.user?.is_admin;
     }
 </script>
 
-{#snippet slotRow(poll: Poll, slot: PollSlot)}
+{#snippet slotRow(poll: PollView, slot: SlotView)}
     {@const playable = slot.yes_count >= PLAYERS_NEEDED}
     {@const isWinner = poll.winning_slot_id === slot.id}
     {@const gone = poll.status === "active" && !slot.expired && !slot.available}
@@ -174,7 +221,7 @@
     </div>
 {/snippet}
 
-{#snippet pollCard(poll: Poll)}
+{#snippet pollCard(poll: PollView)}
     <Card.Root class={poll.status === "closed" ? "opacity-80" : ""}>
         <Card.Header>
             <div class="flex flex-wrap items-start justify-between gap-2">
@@ -200,7 +247,7 @@
                         <Button
                             size="sm"
                             variant="ghost"
-                            onclick={() => deletePoll(poll)}>🗑️</Button
+                            onclick={() => removePoll(poll)}>🗑️</Button
                         >
                     </div>
                 {/if}
@@ -250,7 +297,7 @@
 <Dialog.Root
     open={closeTarget !== null}
     onOpenChange={(open) => {
-        if (!open) closeTarget = null;
+        if (!open) closeTargetId = null;
     }}
 >
     <Dialog.Content>
@@ -304,7 +351,7 @@
             {/each}
         </div>
         <Dialog.Footer>
-            <Button variant="outline" onclick={() => (closeTarget = null)}
+            <Button variant="outline" onclick={() => (closeTargetId = null)}
                 >Cancel</Button
             >
             <Button onclick={confirmClose}>Close poll</Button>

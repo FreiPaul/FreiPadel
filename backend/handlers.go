@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -91,17 +92,31 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	}
 	weekdaysJSON, _ := json.Marshal(s.Weekdays)
 	locationsJSON, _ := json.Marshal(s.Locations)
-	_, err := a.db.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations)
+	tx, err := a.db.Begin()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			weekdays = excluded.weekdays, time_start = excluded.time_start,
 			time_end = excluded.time_end, days_ahead = excluded.days_ahead,
 			min_duration = excluded.min_duration, locations = excluded.locations`,
 		u.ID, string(weekdaysJSON), s.TimeStart, s.TimeEnd, s.DaysAhead, s.MinDuration, string(locationsJSON))
+	if err == nil {
+		// Settings are private — the delta is only visible to its owner.
+		err = appendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", s, u.ID)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	a.hub.notify()
 	writeJSON(w, http.StatusOK, s)
 }
 
@@ -271,6 +286,43 @@ type Invite struct {
 	Uses      int     `json:"uses"`
 }
 
+// loadInvite loads one invite in the API/sync wire shape.
+func loadInvite(q queryer, token string) (*Invite, error) {
+	var inv Invite
+	var disabled int
+	err := q.QueryRow(`
+		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
+		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
+		WHERE i.token = ?`, token).
+		Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses)
+	if err != nil {
+		return nil, err
+	}
+	inv.Disabled = disabled == 1
+	return &inv, nil
+}
+
+func loadInvites(q queryer) ([]Invite, error) {
+	rows, err := q.Query(`
+		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
+		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
+		ORDER BY i.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	invites := []Invite{}
+	for rows.Next() {
+		var inv Invite
+		var disabled int
+		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses); err == nil {
+			inv.Disabled = disabled == 1
+			invites = append(invites, inv)
+		}
+	}
+	return invites, rows.Err()
+}
+
 // POST /api/invites — body: {"kind": "single"|"group"} (defaults to single).
 func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	var req struct {
@@ -286,33 +338,36 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 	token := randomToken(16)
-	_, err := a.db.Exec(`INSERT INTO invites (token, created_by, kind) VALUES (?, ?, ?)`, token, u.ID, req.Kind)
+	tx, err := a.db.Begin()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`INSERT INTO invites (token, created_by, kind) VALUES (?, ?, ?)`, token, u.ID, req.Kind)
+	if err == nil {
+		var inv *Invite
+		if inv, err = loadInvite(tx, token); err == nil {
+			err = appendSync(tx, "invite", token, "upsert", inv, visibleToAdmins)
+		}
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	a.hub.notify()
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "kind": req.Kind})
 }
 
 // GET /api/invites
 func (a *App) handleListInvites(w http.ResponseWriter, r *http.Request, u *User) {
-	rows, err := a.db.Query(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
-		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
-		ORDER BY i.created_at DESC`)
+	invites, err := loadInvites(a.db)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
-	}
-	defer rows.Close()
-	invites := []Invite{}
-	for rows.Next() {
-		var inv Invite
-		var disabled int
-		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses); err == nil {
-			inv.Disabled = disabled == 1
-			invites = append(invites, inv)
-		}
 	}
 	writeJSON(w, http.StatusOK, invites)
 }
@@ -320,7 +375,13 @@ func (a *App) handleListInvites(w http.ResponseWriter, r *http.Request, u *User)
 // POST /api/invites/{token}/disable — stops the link from accepting registrations.
 func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	token := r.PathValue("token")
-	res, err := a.db.Exec(`UPDATE invites SET disabled = 1 WHERE token = ?`, token)
+	tx, err := a.db.Begin()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE invites SET disabled = 1 WHERE token = ?`, token)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -329,6 +390,18 @@ func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *Use
 		httpError(w, http.StatusNotFound, "invite not found")
 		return
 	}
+	var inv *Invite
+	if inv, err = loadInvite(tx, token); err == nil {
+		err = appendSync(tx, "invite", token, "upsert", inv, visibleToAdmins)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	a.hub.notify()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -336,7 +409,13 @@ func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *Use
 // also stops them working); single invites only while unused.
 func (a *App) handleDeleteInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	token := r.PathValue("token")
-	res, err := a.db.Exec(`DELETE FROM invites WHERE token = ? AND (kind = 'group' OR used_by IS NULL)`, token)
+	tx, err := a.db.Begin()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM invites WHERE token = ? AND (kind = 'group' OR used_by IS NULL)`, token)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -345,6 +424,14 @@ func (a *App) handleDeleteInvite(w http.ResponseWriter, r *http.Request, u *User
 		httpError(w, http.StatusNotFound, "invite not found or already used")
 		return
 	}
+	if err = appendSync(tx, "invite", token, "delete", nil, visibleToAdmins); err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	a.hub.notify()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

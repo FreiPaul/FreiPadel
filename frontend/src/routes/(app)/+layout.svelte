@@ -1,16 +1,14 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
     import { page } from "$app/state";
-    import { api, type Poll } from "$lib/api";
     import { auth, loadUser, logout } from "$lib/auth.svelte";
+    import { startSync, stopSync, sync } from "$lib/sync.svelte";
     import { Badge } from "$lib/components/ui/badge";
     import { Button } from "$lib/components/ui/button";
     import { Separator } from "$lib/components/ui/separator";
     import ThemeToggle from "$lib/components/ThemeToggle.svelte";
 
     let { children } = $props();
-
-    let activePolls = $state(0);
 
     $effect(() => {
         if (!auth.loaded) {
@@ -19,26 +17,15 @@
             });
         } else if (!auth.user) {
             goto("/login");
+        } else {
+            // Hydrate the sync store and open the delta stream once per session.
+            startSync();
         }
     });
 
-    // Lightweight badge refresh for the "Active slot polls" tab.
-    $effect(() => {
-        if (!auth.user) return;
-        const update = () =>
-            api
-                .get<Poll[]>("/api/polls")
-                .then(
-                    (polls) =>
-                        (activePolls = polls.filter(
-                            (p) => p.status === "active",
-                        ).length),
-                )
-                .catch(() => {});
-        update();
-        const id = setInterval(update, 20_000);
-        return () => clearInterval(id);
-    });
+    const activePolls = $derived(
+        Object.values(sync.polls).filter((p) => p.status === "active").length,
+    );
 
     const tabs = $derived([
         { href: "/slots", label: "Available slots", icon: "🎾" },
@@ -54,6 +41,7 @@
     ]);
 
     async function handleLogout() {
+        stopSync();
         await logout();
         goto("/login");
     }
@@ -70,7 +58,23 @@
                 <span class="text-lg font-semibold tracking-tight"
                     >FreiPadel</span
                 >
-                <div class="ml-auto">
+                <div class="ml-auto flex items-center gap-3">
+                    {#if sync.ready && !sync.live}
+                        <span
+                            class="flex items-center gap-1.5 text-xs text-amber-500"
+                            title="Connection to the server lost — data on screen may be stale"
+                        >
+                            <span
+                                class="size-2 animate-pulse rounded-full bg-amber-500"
+                            ></span>
+                            reconnecting…
+                        </span>
+                    {:else if sync.ready}
+                        <span
+                            class="size-2 rounded-full bg-green-500"
+                            title="Live — changes from others appear instantly"
+                        ></span>
+                    {/if}
                     <ThemeToggle />
                 </div>
             </div>

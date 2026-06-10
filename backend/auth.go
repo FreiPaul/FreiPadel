@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,6 +179,9 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Default availability settings (weekdays 19:00–21:00).
 	_, _ = a.db.Exec(`INSERT INTO user_settings (user_id) VALUES (?)`, userID)
 
+	_ = appendSync(a.db, "user", strconv.FormatInt(userID, 10), "upsert",
+		syncMember{ID: userID, Name: req.Name, IsAdmin: firstUser}, 0)
+
 	if !firstUser {
 		// Group invites just count registrations; one-time invites are marked used.
 		_, _ = a.db.Exec(`UPDATE invites SET
@@ -186,7 +190,13 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 				used_at = CASE WHEN kind = 'group' THEN used_at ELSE datetime('now') END
 			WHERE token = ?`,
 			userID, req.InviteToken)
+		// Admins see the invite flip to used/counted live.
+		if inv, err := loadInvite(a.db, req.InviteToken); err == nil {
+			_ = appendSync(a.db, "invite", inv.Token, "upsert", inv, visibleToAdmins)
+		}
 	}
+	// One notify after all deltas of this registration are in the log.
+	a.hub.notify()
 
 	if err := a.createSession(w, userID); err != nil {
 		httpError(w, http.StatusInternalServerError, "could not create session")

@@ -31,6 +31,8 @@ type App struct {
 	scraping   bool
 	lastScrape time.Time
 
+	hub *syncHub
+
 	telegramSender telegram.TelegramSender
 }
 
@@ -82,6 +84,7 @@ func main() {
 		secureCookies:  os.Getenv("COOKIE_SECURE") == "1",
 		telegramSender: *telegram.NewSender(scrapeCfg.Telegram.BotToken),
 	}
+	app.hub = newSyncHub(db)
 
 	// Background scrape loop.
 	intervalMin, _ := strconv.Atoi(envOr("SCRAPE_INTERVAL_MINUTES", "30"))
@@ -90,10 +93,11 @@ func main() {
 	}
 	go app.scrapeLoop(time.Duration(intervalMin) * time.Minute)
 
-	// Hourly session cleanup.
+	// Hourly session cleanup + sync log compaction.
 	go func() {
 		for {
 			_, _ = db.Exec(`DELETE FROM sessions WHERE expires_at <= datetime('now')`)
+			app.compactSyncLog()
 			time.Sleep(time.Hour)
 		}
 	}()
@@ -125,6 +129,10 @@ func main() {
 
 	// Members
 	mux.HandleFunc("GET /api/users", app.requireAuth(app.handleListUsers))
+
+	// Sync engine (bootstrap snapshot + SSE delta stream)
+	mux.HandleFunc("GET /api/sync/bootstrap", app.requireAuth(app.handleSyncBootstrap))
+	mux.HandleFunc("GET /api/sync/events", app.requireAuth(app.handleSyncEvents))
 
 	// Invites
 	mux.HandleFunc("GET /api/invites/{token}/check", app.handleCheckInvite)
@@ -179,6 +187,7 @@ func (a *App) triggerScrape() bool {
 	}
 	a.scraping = true
 	a.mu.Unlock()
+	a.hub.broadcastEphemeral("scrape", "status", map[string]bool{"scraping": true})
 
 	go func() {
 		defer func() {
@@ -186,6 +195,7 @@ func (a *App) triggerScrape() bool {
 			a.scraping = false
 			a.lastScrape = time.Now()
 			a.mu.Unlock()
+			a.hub.broadcastEphemeral("scrape", "status", map[string]bool{"scraping": false})
 		}()
 		a.runScrape()
 	}()
@@ -228,6 +238,8 @@ func (a *App) runScrape() {
 		return
 	}
 	defer stmt.Close()
+	keySet := map[string]bool{}
+	keys := []string{}
 	for _, s := range slots {
 		if strings.Contains(strings.ToLower(s.Court), "single") {
 			continue
@@ -236,11 +248,25 @@ func (a *App) runScrape() {
 			log.Printf("scrape store: %v", err)
 			return
 		}
+		if k := slotKey(s.Date, s.Time, s.DurationMinutes, s.Location); !keySet[k] {
+			keySet[k] = true
+			keys = append(keys, k)
+		}
+	}
+	fetchedAt := time.Now().In(a.tz).Format(time.RFC3339)
+	// One delta for the whole snapshot — clients derive poll-slot availability
+	// from the keys and refetch their filtered slot list.
+	if err := appendSync(tx, "slots", "snapshot", "upsert", map[string]any{
+		"keys": keys, "last_fetched_at": fetchedAt,
+	}, 0); err != nil {
+		log.Printf("scrape store: %v", err)
+		return
 	}
 	if err := tx.Commit(); err != nil {
 		log.Printf("scrape store: %v", err)
 		return
 	}
-	_ = setMeta(a.db, "last_fetched_at", time.Now().In(a.tz).Format(time.RFC3339))
+	_ = setMeta(a.db, "last_fetched_at", fetchedAt)
+	a.hub.notify()
 	log.Printf("scrape done: %d slots in %s", len(slots), time.Since(start).Round(time.Millisecond))
 }

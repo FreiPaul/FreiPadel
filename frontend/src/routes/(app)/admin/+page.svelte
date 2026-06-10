@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { api, type Invite, type Member } from '$lib/api';
+	import { api } from '$lib/api';
+	import { sync } from '$lib/sync.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -8,24 +8,15 @@
 	import { formatTimestamp } from '$lib/format';
 	import { toast } from 'svelte-sonner';
 
-	let invites = $state<Invite[]>([]);
-	let members = $state<Member[]>([]);
+	// Rendered straight from the sync store — no fetching on navigation, and
+	// invites flip to "used" live when a friend registers.
+	const invites = $derived(
+		Object.values(sync.invites).sort((a, b) => b.created_at.localeCompare(a.created_at))
+	);
+	const members = $derived(
+		Object.values(sync.members).sort((a, b) => a.name.localeCompare(b.name))
+	);
 	let creating = $state(false);
-
-	async function load() {
-		try {
-			[invites, members] = await Promise.all([
-				api.get<Invite[]>('/api/invites'),
-				api.get<Member[]>('/api/users')
-			]);
-		} catch {
-			toast.error('Could not load invites');
-		}
-	}
-
-	onMount(() => {
-		load();
-	});
 
 	function inviteURL(token: string): string {
 		return `${location.origin}/register?token=${token}`;
@@ -35,8 +26,7 @@
 		creating = true;
 		try {
 			const { token } = await api.post<{ token: string }>('/api/invites', { kind });
-			await copy(token);
-			await load();
+			await copy(token); // the new row arrives as a sync delta
 		} catch {
 			toast.error('Could not create invite');
 		} finally {
@@ -47,8 +37,9 @@
 	async function disable(token: string) {
 		try {
 			await api.post(`/api/invites/${token}/disable`);
+			const inv = sync.invites[token];
+			if (inv) inv.disabled = true; // optimistic; the delta confirms
 			toast.success('Invite link disabled');
-			await load();
 		} catch {
 			toast.error('Could not disable invite');
 		}
@@ -66,7 +57,7 @@
 	async function revoke(token: string) {
 		try {
 			await api.del(`/api/invites/${token}`);
-			await load();
+			delete sync.invites[token]; // optimistic; the delta confirms
 		} catch {
 			toast.error('Could not revoke invite');
 		}
