@@ -1,29 +1,37 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { api, type Settings } from "$lib/api";
+    import { sync } from "$lib/sync.svelte";
     import { Button } from "$lib/components/ui/button";
     import * as Card from "$lib/components/ui/card";
     import { Input } from "$lib/components/ui/input";
     import { Label } from "$lib/components/ui/label";
     import { Skeleton } from "$lib/components/ui/skeleton";
     import { toast } from "svelte-sonner";
-    import { appDataStore, fetchData } from "$lib/store";
 
     let { onSaved }: { onSaved?: () => void } = $props();
 
     const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
     let settings = $state<Settings | null>(null);
-    let allLocations = $state<string[]>([]);
     let saving = $state(false);
 
-    onMount(() => {
-        fetchData(false);
+    // Editable copy, seeded once the sync store is hydrated.
+    $effect(() => {
+        if (!settings && sync.settings) {
+            settings = $state.snapshot(sync.settings) as Settings;
+        }
     });
 
-    $effect(() => {
-        settings = $appDataStore.user_settings;
-        allLocations = $appDataStore.locations || [""];
+    // Locations known from the latest scrape (the location is the last part
+    // of each slot key), plus previously selected ones so they stay visible
+    // even when fully booked right now.
+    const allLocations = $derived.by(() => {
+        const locs = new Set<string>();
+        for (const k of Object.keys(sync.slotKeys)) {
+            locs.add(k.split("|").slice(3).join("|"));
+        }
+        for (const l of sync.settings?.locations ?? []) locs.add(l);
+        return [...locs].sort();
     });
 
     function toggleDay(day: number) {
@@ -46,6 +54,9 @@
         saving = true;
         try {
             settings = await api.put<Settings>("/api/settings", settings);
+            // Apply to the store right away instead of waiting for the SSE
+            // delta — the delta then confirms with identical content.
+            sync.settings = $state.snapshot(settings) as Settings;
             toast.success("Availability saved");
             onSaved?.();
         } catch (err) {

@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { goto } from "$app/navigation";
-    import { api, type SlotGroup, type SlotsResponse } from "$lib/api";
+    import { api, type SlotGroup } from "$lib/api";
+    import { ensureSlots, sync } from "$lib/sync.svelte";
     import AvailabilityFilters from "$lib/components/AvailabilityFilters.svelte";
     import { Badge } from "$lib/components/ui/badge";
     import { Button } from "$lib/components/ui/button";
@@ -12,10 +12,10 @@
     import { formatDate, formatTimeRange, formatTimestamp } from "$lib/format";
     import { toast } from "svelte-sonner";
 
-    let data = $state<SlotsResponse | null>(null);
-    let loading = $state(true);
-    let refreshing = $state(false);
     let showFilters = $state(false);
+
+    const loading = $derived(sync.slotGroups === null);
+    const refreshing = $derived(sync.scraping);
 
     let selecting = $state(false);
     let selected = $state<Record<string, SlotGroup>>({});
@@ -26,7 +26,7 @@
 
     const byDate = $derived.by(() => {
         const groups: { date: string; slots: SlotGroup[] }[] = [];
-        for (const slot of data?.slots ?? []) {
+        for (const slot of sync.slotGroups ?? []) {
             const last = groups.at(-1);
             if (last?.date === slot.date) last.slots.push(slot);
             else groups.push({ date: slot.date, slots: [slot] });
@@ -38,30 +38,21 @@
         return `${s.date}|${s.time}|${s.duration_minutes}|${s.location}`;
     }
 
-    async function load() {
-        try {
-            data = await api.get<SlotsResponse>("/api/slots");
-            // While a scrape is running, poll until it finishes.
-            if (data.scraping) setTimeout(load, 2500);
-            else refreshing = false;
-        } catch {
-            toast.error("Could not load slots");
-        } finally {
-            loading = false;
-        }
-    }
-
-    onMount(() => {
-        load();
+    // The slot list is cached in the sync store; this only hits the network
+    // when a new scrape snapshot landed or my filters changed since the last
+    // fetch — plain navigation back to this page costs no request.
+    $effect(() => {
+        ensureSlots().catch(() => toast.error("Could not load slots"));
     });
 
     async function refresh() {
-        refreshing = true;
         try {
-            await api.post("/api/slots/refresh");
-            setTimeout(load, 2500);
+            const res = await api.post<{ started: boolean }>(
+                "/api/slots/refresh",
+            );
+            if (!res.started)
+                toast.info("Slots were already refreshed less than a minute ago");
         } catch {
-            refreshing = false;
             toast.error("Could not refresh");
         }
     }
@@ -106,8 +97,8 @@
             </h1>
             <p class="text-sm text-muted-foreground">
                 Free courts matching your filters.
-                {#if data?.last_fetched_at}
-                    Updated {formatTimestamp(data.last_fetched_at)}.
+                {#if sync.lastFetchedAt}
+                    Updated {formatTimestamp(sync.lastFetchedAt)}.
                 {/if}
             </p>
         </div>
@@ -123,9 +114,9 @@
                 variant="outline"
                 size="sm"
                 onclick={refresh}
-                disabled={refreshing || data?.scraping}
+                disabled={refreshing}
             >
-                {refreshing || data?.scraping ? "Refreshing…" : "↻ Refresh"}
+                {refreshing ? "Refreshing…" : "↻ Refresh"}
             </Button>
             {#if !selecting}
                 <Button size="sm" onclick={() => (selecting = true)}
@@ -147,13 +138,8 @@
     </div>
 
     {#if showFilters}
-        <AvailabilityFilters
-            onSaved={() => {
-                // showFilters = false;
-                loading = true;
-                load();
-            }}
-        />
+        <!-- Saving updates sync.settings, which invalidates the slot cache. -->
+        <AvailabilityFilters />
     {/if}
 
     {#if selecting}
@@ -173,7 +159,7 @@
     {:else if byDate.length === 0}
         <Card.Root>
             <Card.Content class="py-10 text-center text-muted-foreground">
-                {#if data?.scraping}
+                {#if sync.scraping}
                     Fetching court availability…
                 {:else}
                     No free slots match your availability window. Try widening

@@ -232,10 +232,20 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 			return
 		}
 	}
+	syncP, err := loadSyncPoll(tx, pollID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if err := appendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", syncP, 0); err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	a.hub.notify()
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
 
 	// notify admin via telegram
@@ -275,21 +285,39 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request, u *User) {
 		return
 	}
 
+	tx, err := a.db.Begin()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+	voteEntityID := fmt.Sprintf("%d|%d", req.PollSlotID, u.ID)
 	if req.Vote == nil {
-		_, err = a.db.Exec(`DELETE FROM votes WHERE poll_slot_id = ? AND user_id = ?`, req.PollSlotID, u.ID)
+		_, err = tx.Exec(`DELETE FROM votes WHERE poll_slot_id = ? AND user_id = ?`, req.PollSlotID, u.ID)
+		if err == nil {
+			err = appendSync(tx, "vote", voteEntityID, "delete", nil, 0)
+		}
 	} else {
 		v := 0
 		if *req.Vote {
 			v = 1
 		}
-		_, err = a.db.Exec(`INSERT INTO votes (poll_slot_id, user_id, vote) VALUES (?, ?, ?)
+		_, err = tx.Exec(`INSERT INTO votes (poll_slot_id, user_id, vote) VALUES (?, ?, ?)
 			ON CONFLICT(poll_slot_id, user_id) DO UPDATE SET vote = excluded.vote, updated_at = datetime('now')`,
 			req.PollSlotID, u.ID, v)
+		if err == nil {
+			err = appendSync(tx, "vote", voteEntityID, "upsert",
+				syncVote{PollSlotID: req.PollSlotID, UserID: u.ID, Name: u.Name, Vote: *req.Vote}, 0)
+		}
+	}
+	if err == nil {
+		err = tx.Commit()
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	a.hub.notify()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -336,12 +364,28 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 		}
 	}
 
-	_, err = a.db.Exec(`UPDATE polls SET status = 'closed', winning_slot_id = ?, closed_at = datetime('now') WHERE id = ?`,
-		req.WinningSlotID, pollID)
+	tx, err := a.db.Begin()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`UPDATE polls SET status = 'closed', winning_slot_id = ?, closed_at = datetime('now') WHERE id = ?`,
+		req.WinningSlotID, pollID)
+	if err == nil {
+		var p *syncPoll
+		if p, err = loadSyncPoll(tx, pollID); err == nil {
+			err = appendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", p, 0)
+		}
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	a.hub.notify()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -366,9 +410,23 @@ func (a *App) handleDeletePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		httpError(w, http.StatusForbidden, "only the poll creator can delete it")
 		return
 	}
-	if _, err := a.db.Exec(`DELETE FROM polls WHERE id = ?`, pollID); err != nil {
+	tx, err := a.db.Begin()
+	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`DELETE FROM polls WHERE id = ?`, pollID)
+	if err == nil {
+		err = appendSync(tx, "poll", strconv.FormatInt(pollID, 10), "delete", nil, 0)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	a.hub.notify()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

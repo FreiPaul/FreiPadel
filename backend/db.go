@@ -92,6 +92,18 @@ CREATE TABLE IF NOT EXISTS votes (
 	updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
 	PRIMARY KEY (poll_slot_id, user_id)
 );
+
+-- Sync engine delta log: every mutation appends a row in the same transaction;
+-- the autoincrement id is the global logical clock clients resume from.
+CREATE TABLE IF NOT EXISTS sync_log (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	entity     TEXT NOT NULL, -- 'poll' | 'vote' | 'user' | 'settings' | 'slots'
+	entity_id  TEXT NOT NULL,
+	action     TEXT NOT NULL, -- 'upsert' | 'delete'
+	payload    TEXT,          -- JSON; NULL for deletes
+	visible_to INTEGER,       -- user id; NULL = visible to everyone
+	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 
 func openDB(path string) (*sql.DB, error) {
