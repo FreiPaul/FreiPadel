@@ -10,10 +10,18 @@
 
     let { children } = $props();
 
+    function redirectToLogin() {
+        const currentPath = page.url.pathname + page.url.search;
+
+        if (page.url.pathname !== "/login") {
+            goto(`/login?redirect_to=${encodeURIComponent(currentPath)}`);
+        }
+    }
+
     $effect(() => {
         if (!auth.loaded) {
             loadUser().then((u) => {
-                if (!u) goto("/login");
+                if (!u) redirectToLogin();
             });
         } else if (!auth.user) {
             goto("/login");

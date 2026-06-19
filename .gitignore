@@ -22,3 +22,5 @@ backend/scraper/*.private.go
 
 # misc
 .DS_Store
+
+*.env
