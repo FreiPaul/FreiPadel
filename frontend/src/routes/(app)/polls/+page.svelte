@@ -19,13 +19,19 @@
     import * as Dialog from "$lib/components/ui/dialog";
     import { Separator } from "$lib/components/ui/separator";
     import { Skeleton } from "$lib/components/ui/skeleton";
-    import { formatDate, formatTimeRange } from "$lib/format";
+    import {
+        formatDate,
+        formatTimeRange,
+        getWeekNumber,
+        formatWeekDiff,
+    } from "$lib/format";
     import { toast } from "svelte-sonner";
 
     // View models: sync entities enriched with the fields the markup needs,
     // all derived client-side from the store.
     type SlotView = SyncPollSlot & {
         votes: SyncVote[];
+        week: number;
         yes_count: number;
         no_count: number;
         my_vote: boolean | null;
@@ -47,15 +53,19 @@
         `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
     );
 
+    const [_, curWeek] = $derived(getWeekNumber(today));
+
     function enrich(p: SyncPoll): PollView {
         const slots = p.slots.map((s) => {
             const votes = slotVotes(s.id);
+            const [_, week] = getWeekNumber(s.date);
             const mine = votes.find((v) => v.user_id === auth.user?.id);
             const expired =
                 s.date < today || (s.date === today && s.time <= nowTime);
             return {
                 ...s,
                 votes,
+                week,
                 yes_count: votes.filter((v) => v.vote).length,
                 no_count: votes.filter((v) => !v.vote).length,
                 my_vote: mine ? mine.vote : null,
@@ -152,7 +162,8 @@
     >
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span class="font-medium" class:line-through={gone}
-                >{formatDate(slot.date)}</span
+                >{formatDate(slot.date)}
+                ({formatWeekDiff(curWeek, slot.week)})</span
             >
             <span class="font-medium tabular-nums" class:line-through={gone}>
                 {formatTimeRange(slot.time, slot.duration_minutes)}
