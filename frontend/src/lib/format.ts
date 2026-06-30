@@ -17,7 +17,7 @@ export function formatDate(date: string): string {
 
 export function formatWeekDiff(curWeek: number, slotWeek: number): string {
   const diff = slotWeek - curWeek;
-  if (diff < 0) return "";
+  if (diff < 0) return "in the past";
   if (diff == 0) return "This week";
   if (diff == 1) return "Next week";
   return "in " + diff + " weeks";
