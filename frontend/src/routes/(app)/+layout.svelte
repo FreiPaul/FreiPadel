@@ -43,6 +43,11 @@
             icon: "🗳️",
             badge: activePolls,
         },
+        {
+          href: "/user",
+          label: "User Settings",
+          icon: "⚙️"
+        },
         ...(auth.user?.is_admin
             ? [{ href: "/admin", label: "Invites", icon: "✉️" }]
             : []),
