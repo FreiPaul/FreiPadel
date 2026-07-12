@@ -1,3 +1,16 @@
+<script lang="ts">
+    import { Input } from "$lib/components/ui/input";
+    import { api, type User } from "$lib/api";
+    import { onMount } from "svelte";
+    import { toast } from "svelte-sonner";
+    import { auth } from "$lib/auth.svelte";
+
+    let userEmail = $state<string>(auth.user?.email ?? "");
+    $effect(() => {if (auth.user) userEmail = auth.user.email});
+
+</script>
+
+
 <div class="flex flex-col gap-6">
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>
@@ -7,5 +20,16 @@
 			</p>
 		</div>
 
+		<div class="flex gap-3 items-center w-full">
+
+		<label for="email" class="whitespace-nowrap">E-Mail:</label>
+		 <Input
+			    id="email"
+                class="flex-grow"
+                placeholder="Loading..."
+                bind:value={userEmail}
+            />
+
+		</div>
 	</div>
 </div>
