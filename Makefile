@@ -27,7 +27,7 @@ TAR_EXCLUDES = \
 	--exclude ./logic/venv \
 	--exclude ./logic/__pycache__
 
-.PHONY: ship ship-local-build logs status local
+.PHONY: ship ship-local-build logs status local run-backend run-frontend
 
 ship:
 	@echo "→ syncing source to $(SHIP_HOST):$(SHIP_DIR)"
@@ -62,6 +62,15 @@ logs:
 
 status:
 	ssh $(SHIP_HOST) 'cd $(SHIP_DIR) && docker compose ps'
+
+# Run the backend directly (not in Docker) with backend/.env loaded into the
+# environment. make runs recipes in sh, so set -a / . / set +a are all POSIX.
+run-backend:
+	cd backend && set -a && . ./.env && set +a && go run .
+
+# Run the SvelteKit dev server (Vite) with hot reload.
+run-frontend:
+	cd frontend && npm run dev
 
 # Run the local docker stack (same as on the server)
 local:
