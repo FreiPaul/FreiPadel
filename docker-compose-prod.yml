@@ -20,3 +20,9 @@ services:
       # Prod is served over HTTPS (reverse proxy), so session cookies are
       # marked Secure and never sent over plain HTTP.
       COOKIE_SECURE: "1"
+      # SMTP for transactional email. Fill in real credentials on the server.
+      SMTP_HOST: ""
+      SMTP_PORT: "587"
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      MAIL_FROM: ""
