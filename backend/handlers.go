@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -12,24 +13,48 @@ import (
 var timeRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
 type Settings struct {
-	Weekdays    []int    `json:"weekdays"` // 0=Monday … 6=Sunday (matches the Python logic)
-	TimeStart   string   `json:"time_start"`
-	TimeEnd     string   `json:"time_end"`
-	DaysAhead   int      `json:"days_ahead"`
-	MinDuration int      `json:"min_duration"`
-	Locations   []string `json:"locations"` // empty = all locations
+	Weekdays      []int           `json:"weekdays"` // 0=Monday … 6=Sunday (matches the Python logic)
+	TimeStart     string          `json:"time_start"`
+	TimeEnd       string          `json:"time_end"`
+	DaysAhead     int             `json:"days_ahead"`
+	MinDuration   int             `json:"min_duration"`
+	Locations     []string        `json:"locations"`     // empty = all locations
+	Notifications map[string]bool `json:"notifications"` // notification key -> enabled
+}
+
+// notificationDefaults is the source of truth for which notification keys exist
+// and their default value. Add a key here to introduce a new notification type;
+// no schema change or backfill is needed — mergeNotifications fills it in for
+// every user on read.
+var notificationDefaults = map[string]bool{
+	"slot_available": true,
+	"poll_created":   true,
+}
+
+// mergeNotifications overlays a user's stored preferences on top of the
+// defaults, dropping any unknown/stale keys. This is what makes the setting
+// extendible: the stored JSON is opaque, but the known keys live in code.
+func mergeNotifications(stored map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(notificationDefaults))
+	maps.Copy(out, notificationDefaults)
+	for k, v := range stored {
+		if _, known := notificationDefaults[k]; known {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (a *App) loadSettings(userID int64) (Settings, error) {
 	var s Settings
-	var weekdaysJSON, locationsJSON string
-	err := a.db.QueryRow(`SELECT weekdays, time_start, time_end, days_ahead, min_duration, locations
+	var weekdaysJSON, locationsJSON, notificationsJSON string
+	err := a.db.QueryRow(`SELECT weekdays, time_start, time_end, days_ahead, min_duration, locations, notifications
 		FROM user_settings WHERE user_id = ?`, userID).
-		Scan(&weekdaysJSON, &s.TimeStart, &s.TimeEnd, &s.DaysAhead, &s.MinDuration, &locationsJSON)
+		Scan(&weekdaysJSON, &s.TimeStart, &s.TimeEnd, &s.DaysAhead, &s.MinDuration, &locationsJSON, &notificationsJSON)
 	if err == sql.ErrNoRows {
 		// Older account without a settings row — use defaults.
 		return Settings{Weekdays: []int{0, 1, 2, 3, 4}, TimeStart: "19:00", TimeEnd: "21:00",
-			DaysAhead: 10, MinDuration: 60, Locations: []string{}}, nil
+			DaysAhead: 10, MinDuration: 60, Locations: []string{}, Notifications: mergeNotifications(nil)}, nil
 	}
 	if err != nil {
 		return s, err
@@ -40,6 +65,9 @@ func (a *App) loadSettings(userID int64) (Settings, error) {
 	if err := json.Unmarshal([]byte(locationsJSON), &s.Locations); err != nil || s.Locations == nil {
 		s.Locations = []string{}
 	}
+	var stored map[string]bool
+	_ = json.Unmarshal([]byte(notificationsJSON), &stored) // nil on error -> pure defaults
+	s.Notifications = mergeNotifications(stored)
 	return s, nil
 }
 
@@ -90,21 +118,26 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	if s.Locations == nil {
 		s.Locations = []string{}
 	}
+	// Drop unknown keys and fill in defaults for any the client omitted, so the
+	// stored map only ever contains valid keys.
+	s.Notifications = mergeNotifications(s.Notifications)
 	weekdaysJSON, _ := json.Marshal(s.Weekdays)
 	locationsJSON, _ := json.Marshal(s.Locations)
+	notificationsJSON, _ := json.Marshal(s.Notifications)
 	tx, err := a.db.Begin()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	_, err = tx.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations, notifications)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			weekdays = excluded.weekdays, time_start = excluded.time_start,
 			time_end = excluded.time_end, days_ahead = excluded.days_ahead,
-			min_duration = excluded.min_duration, locations = excluded.locations`,
-		u.ID, string(weekdaysJSON), s.TimeStart, s.TimeEnd, s.DaysAhead, s.MinDuration, string(locationsJSON))
+			min_duration = excluded.min_duration, locations = excluded.locations,
+			notifications = excluded.notifications`,
+		u.ID, string(weekdaysJSON), s.TimeStart, s.TimeEnd, s.DaysAhead, s.MinDuration, string(locationsJSON), string(notificationsJSON))
 	if err == nil {
 		// Settings are private — the delta is only visible to its owner.
 		err = appendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", s, u.ID)
