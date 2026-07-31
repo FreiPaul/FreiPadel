@@ -137,9 +137,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !firstUser {
 		var used sql.NullInt64
 		var kind string
+		var email string
 		var disabled int
-		err := a.db.QueryRow(`SELECT used_by, kind, disabled FROM invites WHERE token = ?`,
-			req.InviteToken).Scan(&used, &kind, &disabled)
+		err := a.db.QueryRow(`SELECT used_by, kind, disabled, email FROM invites WHERE token = ?`,
+			req.InviteToken).Scan(&used, &kind, &disabled, &email)
 		if err == sql.ErrNoRows {
 			httpError(w, http.StatusForbidden, "invalid invite link")
 			return
@@ -154,6 +155,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		if kind != "group" && used.Valid {
 			httpError(w, http.StatusForbidden, "this invite link has already been used")
+			return
+		}
+		if kind == "email" && req.Email != email {
+			httpError(w, http.StatusForbidden, "this invite belongs to another email")
 			return
 		}
 	}

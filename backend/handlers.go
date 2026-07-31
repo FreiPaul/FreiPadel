@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"regexp"
@@ -376,15 +377,25 @@ func loadInvites(q queryer) ([]Invite, error) {
 // POST /api/invites — body: {"kind": "single"|"group"} (defaults to single).
 func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	var req struct {
-		Kind string `json:"kind"`
+		Kind   string `json:"kind"`
+		Email  string `json:"email"`
+		Origin string `json:"origin"`
 	}
 	// Body is optional; an empty body means a single-use invite.
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
 	if req.Kind == "" {
 		req.Kind = "single"
 	}
-	if req.Kind != "single" && req.Kind != "group" {
-		httpError(w, http.StatusBadRequest, "kind must be 'single' or 'group'")
+	if req.Origin == "" {
+		req.Origin = "https://freipadel.freipaul.com/"
+	}
+	if req.Kind != "single" && req.Kind != "group" && req.Kind != "email" {
+		httpError(w, http.StatusBadRequest, "kind must be 'single' or 'group' or 'email'")
+		return
+	}
+
+	if req.Kind == "email" && req.Email == "" {
+		httpError(w, http.StatusBadRequest, "email invite must include an email address")
 		return
 	}
 	token := randomToken(16)
@@ -394,7 +405,7 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO invites (token, created_by, kind) VALUES (?, ?, ?)`, token, u.ID, req.Kind)
+	_, err = tx.Exec(`INSERT INTO invites (token, created_by, kind, email) VALUES (?, ?, ?, ?)`, token, u.ID, req.Kind, req.Email)
 	if err == nil {
 		var inv *Invite
 		if inv, err = loadInvite(tx, token); err == nil {
@@ -407,6 +418,10 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
+	}
+	if req.Kind == "email" {
+		// send email with invite link
+		a.emailer.Send(req.Email, "You've been invited to FreiPadel", fmt.Sprint("click this link: <a href=\"", req.Origin, "/register?token=", token, "\""))
 	}
 	a.hub.notify()
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "kind": req.Kind})
@@ -491,8 +506,9 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 	var used sql.NullInt64
 	var kind string
 	var disabled int
-	err := a.db.QueryRow(`SELECT used_by, kind, disabled FROM invites WHERE token = ?`, token).
-		Scan(&used, &kind, &disabled)
+	var email string
+	err := a.db.QueryRow(`SELECT used_by, kind, disabled, email FROM invites WHERE token = ?`, token).
+		Scan(&used, &kind, &disabled, &email)
 	if err == sql.ErrNoRows {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "unknown"})
 		return
@@ -509,5 +525,5 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "used"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"valid": true})
+	writeJSON(w, http.StatusOK, map[string]any{"valid": true, "email": email})
 }

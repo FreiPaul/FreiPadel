@@ -26,19 +26,11 @@
 	let invite_email = $state("");
 	let inviting = $state(false);
 
-	function createEmailInvite() {
-	    console.log("email: " + invite_email);
-		inviting = true;
-		setTimeout(() => {
-    		inviting=false;
-    		toast.success("Invited: " + invite_email);
-		}, 400);
-	}
-
-	async function createInvite(kind: 'single' | 'group') {
+	async function createInvite(kind: 'single' | 'group' | 'email', email?: string) {
 		creating = true;
+		let origin = location.origin;
 		try {
-			const { token } = await api.post<{ token: string }>('/api/invites', { kind });
+			const { token } = await api.post<{ token: string }>('/api/invites', { kind, email, origin});
 			await copy(token); // the new row arrives as a sync delta
 		} catch {
 			toast.error('Could not create invite');
@@ -163,7 +155,7 @@
         >
         </Input>
         <Button
-            onclick={createEmailInvite}
+            onclick={() => {createInvite("email",invite_email)}}
             disabled={inviting}>Invite member</Button>
 	</div>
 	</Card.CardContent>
