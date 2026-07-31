@@ -115,19 +115,52 @@ func (e *Emailer) buildMessage(to, subject, body string) []byte {
 // mandatory StartTLS.
 func (e *Emailer) sendSMTP(to string, msg []byte) error {
 	addr := net.JoinHostPort(e.host, e.port)
-	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).Dial("tcp", addr)
+
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	tlsConfig := &tls.Config{
+		ServerName: e.host,
+		MinVersion: tls.VersionTLS12,
+	}
+
+	var (
+		conn net.Conn
+		err  error
+	)
+
+	if e.port == "465" {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
+
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
+
+	// Prevent reads or writes from hanging indefinitely.
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		conn.Close()
+		return fmt.Errorf("smtp deadline: %w", err)
+	}
+
 	c, err := smtp.NewClient(conn, e.host)
 	if err != nil {
+		conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
 	defer c.Close()
 
-	if err := c.StartTLS(&tls.Config{ServerName: e.host}); err != nil {
-		return fmt.Errorf("smtp starttls: %w", err)
+	if e.port != "465" {
+		ok, _ := c.Extension("STARTTLS")
+		if !ok {
+			return fmt.Errorf("smtp server does not advertise STARTTLS")
+		}
+
+		if err := c.StartTLS(tlsConfig); err != nil {
+			return fmt.Errorf("smtp starttls: %w", err)
+		}
 	}
+
 	if err := c.Auth(smtp.PlainAuth("", e.username, e.password, e.host)); err != nil {
 		return fmt.Errorf("smtp auth: %w", err)
 	}
@@ -137,17 +170,24 @@ func (e *Emailer) sendSMTP(to string, msg []byte) error {
 	if err := c.Rcpt(to); err != nil {
 		return fmt.Errorf("smtp rcpt to: %w", err)
 	}
+
 	wc, err := c.Data()
 	if err != nil {
 		return fmt.Errorf("smtp data: %w", err)
 	}
+
 	if _, err := wc.Write(msg); err != nil {
+		_ = wc.Close()
 		return fmt.Errorf("smtp write: %w", err)
 	}
 	if err := wc.Close(); err != nil {
 		return fmt.Errorf("smtp close: %w", err)
 	}
-	return c.Quit()
+
+	if err := c.Quit(); err != nil {
+		return fmt.Errorf("smtp quit: %w", err)
+	}
+	return nil
 }
 
 // messageID builds a unique Message-ID using the sender's domain.
