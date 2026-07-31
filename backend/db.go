@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS invites (
 	created_at TEXT NOT NULL DEFAULT (datetime('now')),
 	used_by    INTEGER REFERENCES users(id), -- single invites: who redeemed it
 	used_at    TEXT,
-	kind       TEXT NOT NULL DEFAULT 'single', -- 'single' (one-time) | 'group' (reusable)
+	email      TEXT,
+	kind       TEXT NOT NULL DEFAULT 'single', -- 'single' (one-time) | 'group' (reusable) | 'email' (bound to email)
 	disabled   INTEGER NOT NULL DEFAULT 0,
 	uses       INTEGER NOT NULL DEFAULT 0
 );
@@ -127,6 +128,8 @@ func openDB(path string) (*sql.DB, error) {
 	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0`)
 	// Backfill uses for invites redeemed before the counter existed.
 	_, _ = db.Exec(`UPDATE invites SET uses = 1 WHERE used_by IS NOT NULL AND uses = 0`)
+
+	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN email TEXT`)
 
 	if err := migrateHashSessions(db); err != nil {
 		return nil, fmt.Errorf("hash existing sessions: %w", err)
