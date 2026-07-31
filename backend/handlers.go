@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	"freipadel/scraper"
 )
 
 var timeRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
@@ -65,6 +67,7 @@ func (a *App) loadSettings(userID int64) (Settings, error) {
 	if err := json.Unmarshal([]byte(locationsJSON), &s.Locations); err != nil || s.Locations == nil {
 		s.Locations = []string{}
 	}
+	s.Locations = normalizeLocationNames(s.Locations)
 	var stored map[string]bool
 	_ = json.Unmarshal([]byte(notificationsJSON), &stored) // nil on error -> pure defaults
 	s.Notifications = mergeNotifications(stored)
@@ -118,6 +121,7 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	if s.Locations == nil {
 		s.Locations = []string{}
 	}
+	s.Locations = normalizeLocationNames(s.Locations)
 	// Drop unknown keys and fill in defaults for any the client omitted, so the
 	// stored map only ever contains valid keys.
 	s.Notifications = mergeNotifications(s.Notifications)
@@ -151,6 +155,19 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	}
 	a.hub.notify()
 	writeJSON(w, http.StatusOK, s)
+}
+
+func normalizeLocationNames(locations []string) []string {
+	out := make([]string, 0, len(locations))
+	seen := make(map[string]bool, len(locations))
+	for _, location := range locations {
+		location = scraper.NormalizeLocationName(location)
+		if location != "" && !seen[location] {
+			seen[location] = true
+			out = append(out, location)
+		}
+	}
+	return out
 }
 
 // SlotGroup is one pollable option: all free courts at the same

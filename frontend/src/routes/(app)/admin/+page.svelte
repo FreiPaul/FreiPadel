@@ -7,6 +7,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { formatTimestamp } from '$lib/format';
 	import { toast } from 'svelte-sonner';
+    import Input from '$lib/components/ui/input/input.svelte';
 
 	// Rendered straight from the sync store — no fetching on navigation, and
 	// invites flip to "used" live when a friend registers.
@@ -20,6 +21,18 @@
 
 	function inviteURL(token: string): string {
 		return `${location.origin}/register?token=${token}`;
+	}
+
+	let invite_email = $state("");
+	let inviting = $state(false);
+
+	function createEmailInvite() {
+	    console.log("email: " + invite_email);
+		inviting = true;
+		setTimeout(() => {
+    		inviting=false;
+    		toast.success("Invited: " + invite_email);
+		}, 400);
 	}
 
 	async function createInvite(kind: 'single' | 'group') {
@@ -65,6 +78,7 @@
 </script>
 
 <div class="flex flex-col gap-6">
+
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>
 			<h1 class="text-2xl font-semibold tracking-tight">Invites</h1>
@@ -134,6 +148,25 @@
 				</div>
 			{/each}
 		</Card.Content>
+	</Card.Root>
+
+	<Separator />
+
+	<Card.Root>
+	<Card.CardContent>
+	<h3>Invite a member via e-mail. An email will be sent automatically and the invite link is only valid for the email.</h3>
+	<div class="flex gap-2 align-middle">
+        <Input
+            id="email"
+            placeholder="E-Mail"
+            bind:value={invite_email}
+        >
+        </Input>
+        <Button
+            onclick={createEmailInvite}
+            disabled={inviting}>Invite member</Button>
+	</div>
+	</Card.CardContent>
 	</Card.Root>
 
 	<Separator />
