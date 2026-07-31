@@ -97,7 +97,7 @@ func (e *Emailer) buildMessage(to, subject, body string) []byte {
 	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")
 	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", sanitizeHeader(subject)) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: 8bit\r\n")
 	b.WriteString("\r\n")
 	b.WriteString(body)
