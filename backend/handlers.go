@@ -344,10 +344,10 @@ func loadInvite(q queryer, token string) (*Invite, error) {
 	var inv Invite
 	var disabled int
 	err := q.QueryRow(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
+		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses, i.email
 		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
 		WHERE i.token = ?`, token).
-		Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses)
+		Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses, &inv.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +404,8 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	// check wether email is already present in db
 	var exists bool
 	err := a.db.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM users WHERE email = ?)`,
+		`SELECT (EXISTS(SELECT 1 FROM users WHERE email = ?) OR EXISTS(SELECT 1 FROM invites WHERE email = ?))`,
+		req.Email,
 		req.Email,
 	).Scan(&exists)
 	if err != nil {
@@ -412,7 +413,7 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 	if exists {
-		httpError(w, http.StatusConflict, "user with email already exists")
+		httpError(w, http.StatusConflict, "user/invite with email already exists")
 		return
 	}
 

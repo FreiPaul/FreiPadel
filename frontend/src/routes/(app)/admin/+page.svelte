@@ -22,20 +22,33 @@
 		return `${location.origin}/register?token=${token}`;
 	}
 
-	let invite_email = $state("");
+	let invite_email = $state('');
 	let inviting = $state(false);
 
 	async function createInvite(kind: 'single' | 'group' | 'email', email?: string) {
+		const normalizedEmail = email?.trim();
+		if (kind === 'email' && !normalizedEmail) {
+			toast.error('Enter an email address');
+			return;
+		}
+
 		inviting = true;
-		let origin = location.origin;
 		try {
-			const { token } = await api.post<{ token: string }>('/api/invites', { kind, email, origin});
-			await copy(token); // the new row arrives as a sync delta
+			const { token } = await api.post<{ token: string }>('/api/invites', {
+				kind,
+				email: normalizedEmail,
+				origin: location.origin
+			});
+			if (kind === 'email') {
+				invite_email = '';
+				toast.success('Email invite sent');
+			} else {
+				await copy(token);
+			}
 		} catch (e) {
 			toast.error('Could not create invite', { description: e instanceof Error ? e.message : 'Unknown error' });
 		} finally {
 			inviting = false;
-			email = "";
 		}
 	}
 
@@ -120,7 +133,11 @@
 								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
 							{/if}
 						</div>
-					{:else if invite.kind === 'single'}
+					{:else}
+						{#if invite.kind === 'email'}
+							<Badge variant="outline">email</Badge>
+							<span class="text-xs text-muted-foreground">{invite.email}</span>
+						{/if}
 						{#if invite.used_by}
 							<Badge variant="secondary">used by {invite.used_by}</Badge>
 							<span class="text-xs text-muted-foreground">{formatTimestamp(invite.used_at ?? '')}</span>
@@ -130,16 +147,14 @@
 								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
 							</div>
 						{:else}
-						<Badge>open</Badge>
-							E-Mail: {invite.email}
+							<Badge>open</Badge>
+							<div class="ml-auto flex gap-1.5">
+								<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
+									Copy link
+								</Button>
+								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Revoke</Button>
+							</div>
 						{/if}
-					{:else}
-						<div class="ml-auto flex gap-1.5">
-							<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
-								Copy link
-							</Button>
-							<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Revoke</Button>
-						</div>
 					{/if}
 				</div>
 			{/each}
