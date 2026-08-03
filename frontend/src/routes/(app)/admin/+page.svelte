@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { auth } from '$lib/auth.svelte';
 	import { sync } from '$lib/sync.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -17,6 +18,8 @@
 	const members = $derived(
 		Object.values(sync.members).sort((a, b) => a.name.localeCompare(b.name))
 	);
+
+	const emailer_enabled = $derived(auth.me?.emailer_enabled);
 
 	function inviteURL(token: string): string {
 		return `${location.origin}/register?token=${token}`;
@@ -163,6 +166,7 @@
 
 	<Separator />
 
+	{#if emailer_enabled}
 	<Card.Root>
 	<Card.CardContent>
 	<h3>Invite a member via e-mail. An email will be sent automatically and the invite link is only valid for the email.</h3>
@@ -185,6 +189,7 @@
 	</div>
 	</Card.CardContent>
 	</Card.Root>
+	{/if}
 
 	<Separator />
 

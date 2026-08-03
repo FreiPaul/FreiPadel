@@ -396,6 +396,11 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 
+	if req.Kind == "email" && !a.emailer.Configured() {
+		httpError(w, http.StatusBadRequest, "the emailer is disabled in this deployment")
+		return
+	}
+
 	if req.Kind == "email" && req.Email == "" {
 		httpError(w, http.StatusBadRequest, "email invite must include an email address")
 		return

@@ -32,35 +32,48 @@ type Emailer struct {
 	username string
 	password string
 	from     string // envelope + header sender; defaults to username
+	enabled  bool
 }
 
 // NewSender builds an Emailer from explicit SMTP settings. If port is empty it
 // defaults to 587 (submission + STARTTLS); if from is empty it falls back to
 // username.
-func NewSender(host, port, username, password, from string) *Emailer {
+func NewSender(host, port, username, password, from string, enabled bool) *Emailer {
 	if port == "" {
 		port = "587"
 	}
 	if from == "" {
 		from = username
 	}
-	return &Emailer{host: host, port: port, username: username, password: password, from: from}
+	return &Emailer{host: host, port: port, username: username, password: password, from: from, enabled: enabled}
 }
 
 // FromEnv builds an Emailer from the SMTP_* / MAIL_FROM environment variables.
 func FromEnv() *Emailer {
-	return NewSender(
-		os.Getenv("SMTP_HOST"),
-		os.Getenv("SMTP_PORT"),
-		os.Getenv("SMTP_USER"),
-		os.Getenv("SMTP_PASS"),
-		os.Getenv("MAIL_FROM"),
-	)
+	if os.Getenv("EMAILER_ENABLED") == "1" {
+		return NewSender(
+			os.Getenv("SMTP_HOST"),
+			os.Getenv("SMTP_PORT"),
+			os.Getenv("SMTP_USER"),
+			os.Getenv("SMTP_PASS"),
+			os.Getenv("MAIL_FROM"),
+			true,
+		)
+	} else {
+		return NewSender(
+			"",
+			"",
+			"",
+			"",
+			"",
+			false,
+		)
+	}
 }
 
 // Configured reports whether enough SMTP settings are present to send mail.
 func (e *Emailer) Configured() bool {
-	return e.host != "" && e.username != "" && e.password != ""
+	return e.host != "" && e.username != "" && e.password != "" && e.enabled
 }
 
 // Send delivers a plain-text UTF-8 email. Like the telegram sender, it is a

@@ -90,7 +90,7 @@ func main() {
 	if app.emailer.Configured() {
 		log.Printf("SMTP emailer configured")
 	} else {
-		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS to enable)")
+		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS and EMAILER_ENABLED=\"1\")")
 	}
 	app.hub = newSyncHub(db)
 

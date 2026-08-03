@@ -49,6 +49,7 @@ archive and Docker build context.
 | `STATIC_DIR`              | `./static` | Built frontend to serve              |
 | `SCRAPE_INTERVAL_MINUTES` | `30`       | Court availability refresh interval  |
 | `COOKIE_SECURE`           | `0`        | Set `1` when serving over HTTPS      |
+| `EMAILER_ENABLED`         | —          | Wether the emailer is enabled        |
 | `SMTP_HOST`               | —          | SMTP server hostname                 |
 | `SMTP_PORT`               | `587`      | SMTP submission port                 |
 | `SMTP_USER`               | —          | SMTP authentication username         |

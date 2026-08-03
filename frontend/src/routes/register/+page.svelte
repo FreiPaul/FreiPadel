@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, ApiError, type User } from '$lib/api';
+	import { api, ApiError, type Me } from '$lib/api';
 	import { auth } from '$lib/auth.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -49,7 +49,7 @@
 		error = '';
 		loading = true;
 		try {
-			auth.user = await api.post<User>('/api/auth/register', {
+			auth.me = await api.post<Me>('/api/auth/register', {
 				invite_token: token,
 				name,
 				email,

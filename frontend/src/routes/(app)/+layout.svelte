@@ -23,7 +23,7 @@
             loadUser().then((u) => {
                 if (!u) redirectToLogin();
             });
-        } else if (!auth.user) {
+        } else if (!auth.me?.user) {
             goto("/login");
         } else {
             // Hydrate the sync store and open the delta stream once per session.
@@ -48,7 +48,7 @@
           label: "User Settings",
           icon: "⚙️"
         },
-        ...(auth.user?.is_admin
+        ...(auth.me?.user?.is_admin
             ? [{ href: "/admin", label: "Invites", icon: "✉️" }]
             : []),
     ]);
@@ -60,7 +60,7 @@
     }
 </script>
 
-{#if auth.user}
+{#if auth.me?.user}
     <div class="flex min-h-svh flex-col md:flex-row">
         <!-- Sidebar with vertical tabs -->
         <aside
@@ -118,9 +118,9 @@
             <div class="mt-auto hidden flex-col gap-2 p-4 md:flex">
                 <Separator />
                 <div class="text-sm">
-                    <div class="font-medium">{auth.user.name}</div>
+                    <div class="font-medium">{auth.me.user.name}</div>
                     <div class="truncate text-xs text-muted-foreground">
-                        {auth.user.email}
+                        {auth.me.user.email}
                     </div>
                 </div>
                 <Button variant="outline" size="sm" onclick={handleLogout}
@@ -137,7 +137,7 @@
             <!-- Mobile logout -->
             <div class="p-4 text-center md:hidden">
                 <Button variant="ghost" size="sm" onclick={handleLogout}>
-                    Log out ({auth.user.name})
+                    Log out ({auth.me.user.name})
                 </Button>
             </div>
         </main>

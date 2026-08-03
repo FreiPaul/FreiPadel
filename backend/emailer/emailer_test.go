@@ -13,11 +13,12 @@ func TestSendEmail(t *testing.T) {
 		os.Getenv("SMTP_USER"),
 		os.Getenv("SMTP_PASS"),
 		os.Getenv("MAIL_FROM"),
+		true,
 	)
 
 	fmt.Printf("host: %s", os.Getenv("SMTP_HOST"))
 
-	err := emailer.Send("paul.herrmann@rwth-aachen.de", "Test Email", "The test worked!")
+	err := emailer.Send("test@example.com", "Test Email", "The test worked!")
 
 	if err != nil {
 		t.Fatal("Sending of email did not work:", err)

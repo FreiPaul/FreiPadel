@@ -5,8 +5,8 @@
     import { toast } from "svelte-sonner";
     import { auth } from "$lib/auth.svelte";
 
-    let userEmail = $state<string>(auth.user?.email ?? "");
-    $effect(() => {if (auth.user) userEmail = auth.user.email});
+    let userEmail = $state<string>(auth.me?.user?.email ?? "");
+    $effect(() => {if (auth.me?.user) userEmail = auth.me?.user.email});
 
 </script>
 
