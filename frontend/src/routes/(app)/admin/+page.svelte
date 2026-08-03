@@ -120,16 +120,20 @@
 								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
 							{/if}
 						</div>
-					{:else if invite.used_by}
-						<Badge variant="secondary">used by {invite.used_by}</Badge>
-						<span class="text-xs text-muted-foreground">{formatTimestamp(invite.used_at ?? '')}</span>
-					{:else if invite.disabled}
-						<Badge variant="secondary" class="opacity-70">disabled</Badge>
-						<div class="ml-auto">
-							<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
-						</div>
-					{:else}
+					{:else if invite.kind === 'single'}
+						{#if invite.used_by}
+							<Badge variant="secondary">used by {invite.used_by}</Badge>
+							<span class="text-xs text-muted-foreground">{formatTimestamp(invite.used_at ?? '')}</span>
+						{:else if invite.disabled}
+							<Badge variant="secondary" class="opacity-70">disabled</Badge>
+							<div class="ml-auto">
+								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
+							</div>
+						{:else}
 						<Badge>open</Badge>
+							E-Mail: {invite.email}
+						{/if}
+					{:else}
 						<div class="ml-auto flex gap-1.5">
 							<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
 								Copy link

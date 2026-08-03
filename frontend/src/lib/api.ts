@@ -69,8 +69,9 @@ export interface Poll {
 
 export interface Invite {
 	token: string;
-	kind: 'single' | 'group';
+	kind: 'single' | 'group' | 'email';
 	created_at: string;
+	email: string | null;
 	used_by: string | null;
 	used_at: string | null;
 	disabled: boolean;

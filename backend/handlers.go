@@ -330,7 +330,8 @@ func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request, u *User) {
 
 type Invite struct {
 	Token     string  `json:"token"`
-	Kind      string  `json:"kind"` // 'single' | 'group'
+	Kind      string  `json:"kind"` // 'single' | 'group' | 'email'
+	Email     *string `json:"email"`
 	CreatedAt string  `json:"created_at"`
 	UsedBy    *string `json:"used_by"` // single invites: name of the user who redeemed it
 	UsedAt    *string `json:"used_at"`
@@ -356,7 +357,7 @@ func loadInvite(q queryer, token string) (*Invite, error) {
 
 func loadInvites(q queryer) ([]Invite, error) {
 	rows, err := q.Query(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
+		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses, i.email
 		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
 		ORDER BY i.created_at DESC`)
 	if err != nil {
@@ -367,7 +368,7 @@ func loadInvites(q queryer) ([]Invite, error) {
 	for rows.Next() {
 		var inv Invite
 		var disabled int
-		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses); err == nil {
+		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses, &inv.Email); err == nil {
 			inv.Disabled = disabled == 1
 			invites = append(invites, inv)
 		}
