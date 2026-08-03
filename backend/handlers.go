@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"maps"
 	"net/http"
 	"regexp"
@@ -398,6 +399,22 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		httpError(w, http.StatusBadRequest, "email invite must include an email address")
 		return
 	}
+
+	// check wether email is already present in db
+	var exists bool
+	err := a.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM users WHERE email = ?)`,
+		req.Email,
+	).Scan(&exists)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if exists {
+		httpError(w, http.StatusConflict, "user with email already exists")
+		return
+	}
+
 	token := randomToken(16)
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -421,7 +438,13 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	}
 	if req.Kind == "email" {
 		// send email with invite link
-		a.emailer.Send(req.Email, "You've been invited to FreiPadel", fmt.Sprint("click this link: <a href=\"", req.Origin, "/register?token=", token, "\""))
+		body := fmt.Sprintf(
+			`<p>You've been invited to FreiPadel.</p>
+<p><a href="%s/register?token=%s">Accept invitation</a></p>`,
+			template.HTMLEscapeString(req.Origin),
+			template.HTMLEscapeString(token),
+		)
+		a.emailer.Send(req.Email, "You've been invited to FreiPadel", body)
 	}
 	a.hub.notify()
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "kind": req.Kind})

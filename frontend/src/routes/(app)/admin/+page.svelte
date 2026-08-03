@@ -32,8 +32,8 @@
 		try {
 			const { token } = await api.post<{ token: string }>('/api/invites', { kind, email, origin});
 			await copy(token); // the new row arrives as a sync delta
-		} catch {
-			toast.error('Could not create invite');
+		} catch (e) {
+			toast.error('Could not create invite', { description: e instanceof Error ? e.message : 'Unknown error' });
 		} finally {
 			creating = false;
 		}
