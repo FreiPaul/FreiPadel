@@ -152,6 +152,12 @@
             id="email"
             placeholder="E-Mail"
             bind:value={invite_email}
+			onkeydown={(e) => {
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					createInvite("email",invite_email);
+				}
+			}}
         >
         </Input>
         <Button
