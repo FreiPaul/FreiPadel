@@ -17,7 +17,6 @@
 	const members = $derived(
 		Object.values(sync.members).sort((a, b) => a.name.localeCompare(b.name))
 	);
-	let creating = $state(false);
 
 	function inviteURL(token: string): string {
 		return `${location.origin}/register?token=${token}`;
@@ -27,7 +26,7 @@
 	let inviting = $state(false);
 
 	async function createInvite(kind: 'single' | 'group' | 'email', email?: string) {
-		creating = true;
+		inviting = true;
 		let origin = location.origin;
 		try {
 			const { token } = await api.post<{ token: string }>('/api/invites', { kind, email, origin});
@@ -35,7 +34,8 @@
 		} catch (e) {
 			toast.error('Could not create invite', { description: e instanceof Error ? e.message : 'Unknown error' });
 		} finally {
-			creating = false;
+			inviting = false;
+			email = "";
 		}
 	}
 
@@ -80,10 +80,10 @@
 			</p>
 		</div>
 		<div class="flex gap-2">
-			<Button variant="outline" onclick={() => createInvite('single')} disabled={creating}>
+			<Button variant="outline" onclick={() => createInvite('single')} disabled={inviting}>
 				+ One-time link
 			</Button>
-			<Button onclick={() => createInvite('group')} disabled={creating}>+ Group link</Button>
+			<Button onclick={() => createInvite('group')} disabled={inviting}>+ Group link</Button>
 		</div>
 	</div>
 
