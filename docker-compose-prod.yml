@@ -14,15 +14,11 @@ services:
     volumes:
       # SQLite database + scraper config.json live here
       - ./data:/data
+    env_file:
+      - ./data/production.env
     environment:
       # How often to re-scrape court availability
       SCRAPE_INTERVAL_MINUTES: "30"
       # Prod is served over HTTPS (reverse proxy), so session cookies are
       # marked Secure and never sent over plain HTTP.
       COOKIE_SECURE: "1"
-      # SMTP for transactional email. Fill in real credentials on the server.
-      SMTP_HOST: ""
-      SMTP_PORT: "587"
-      SMTP_USER: ""
-      SMTP_PASS: ""
-      MAIL_FROM: ""
