@@ -60,6 +60,7 @@
             const votes = slotVotes(s.id);
             const [_, week] = getWeekNumber(s.date);
             const mine = votes.find((v) => v.user_id === auth.me?.user?.id);
+
             const expired =
                 s.date < today || (s.date === today && s.time <= nowTime);
             return {
