@@ -128,8 +128,7 @@ func openDB(path string) (*database, error) {
 		// Schema changes remain explicit while the query layer is migrated.
 		DisableForeignKeyConstraintWhenMigrating: true,
 		// Match the old database/sql layer, which only logged errors at the
-		// call site. In particular, expected duplicate-column migrations must
-		// not emit GORM error logs on every startup.
+		// call site.
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
@@ -146,17 +145,10 @@ func openDB(path string) (*database, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	// Migrations for databases created before these columns existed;
-	// the duplicate-column errors on fresh databases are expected.
-	_, _ = db.Exec(`ALTER TABLE user_settings ADD COLUMN locations TEXT NOT NULL DEFAULT '[]'`)
-	_, _ = db.Exec(`ALTER TABLE user_settings ADD COLUMN notifications TEXT NOT NULL DEFAULT '{}'`)
-	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'single'`)
-	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`)
-	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0`)
-	// Backfill uses for invites redeemed before the counter existed.
-	_, _ = db.Exec(`UPDATE invites SET uses = 1 WHERE used_by IS NOT NULL AND uses = 0`)
-
-	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN email TEXT`)
+	if err := applySchemaMigrations(db, schemaMigrations); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 
 	if err := migrateHashSessions(db); err != nil {
 		_ = db.Close()

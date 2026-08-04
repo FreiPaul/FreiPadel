@@ -2,7 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +67,9 @@ func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
 	}
 	if got := db.Stats().MaxOpenConnections; got != 1 {
 		t.Errorf("MaxOpenConnections = %d, want 1", got)
+	}
+	if got := getMeta(db, schemaVersionKey); got != strconv.Itoa(latestSchemaVersion) {
+		t.Errorf("schema version = %q, want %d", got, latestSchemaVersion)
 	}
 }
 
@@ -181,6 +187,9 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	if got := getMeta(db, "sessions_hashed"); got != "1" {
 		t.Errorf("sessions_hashed = %q, want 1", got)
 	}
+	if got := getMeta(db, schemaVersionKey); got != strconv.Itoa(latestSchemaVersion) {
+		t.Errorf("legacy schema version = %q, want %d", got, latestSchemaVersion)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close migrated database: %v", err)
 	}
@@ -197,6 +206,65 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	}
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM users`); got != 1 {
 		t.Errorf("user count after reopen = %d, want 1", got)
+	}
+}
+
+func TestSchemaMigrationRollsBackChangesAndVersionOnFailure(t *testing.T) {
+	db := openTestDB(t)
+	wantErr := errors.New("migration failed")
+	migrations := append([]schemaMigration(nil), schemaMigrations...)
+	migrations = append(migrations, schemaMigration{
+		Version: latestSchemaVersion + 1,
+		Name:    "failing test migration",
+		Up: func(tx *sql.Tx) error {
+			if err := addColumnIfMissing(tx, "meta", "migration_probe",
+				`ALTER TABLE meta ADD COLUMN migration_probe TEXT`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('rolled_back', '1')`); err != nil {
+				return err
+			}
+			return wantErr
+		},
+	})
+
+	err := applySchemaMigrations(db, migrations)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("apply failing migration error = %v, want %v", err, wantErr)
+	}
+	if got := getMeta(db, "rolled_back"); got != "" {
+		t.Errorf("rolled-back migration value = %q, want empty", got)
+	}
+	if got := scalarInt(t, db,
+		`SELECT COUNT(*) FROM pragma_table_info('meta') WHERE name = 'migration_probe'`); got != 0 {
+		t.Errorf("rolled-back column count = %d, want 0", got)
+	}
+	if got := getMeta(db, schemaVersionKey); got != strconv.Itoa(latestSchemaVersion) {
+		t.Errorf("schema version after rollback = %q, want %d", got, latestSchemaVersion)
+	}
+}
+
+func TestOpenDBRejectsNewerSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "newer.db")
+	database, err := openDB(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	newerVersion := latestSchemaVersion + 1
+	if err := setMeta(database.SQL, schemaVersionKey, strconv.Itoa(newerVersion)); err != nil {
+		database.Close()
+		t.Fatalf("set newer schema version: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	_, err = openDB(path)
+	if err == nil {
+		t.Fatal("opening a newer schema version succeeded")
+	}
+	if !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("newer schema error = %v", err)
 	}
 }
 
