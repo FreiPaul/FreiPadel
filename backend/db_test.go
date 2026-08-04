@@ -1,0 +1,296 @@
+package main
+
+import (
+	"database/sql"
+	"path/filepath"
+	"testing"
+)
+
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := openDB(filepath.Join(t.TempDir(), "freipadel.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
+	return db
+}
+
+func scalarInt(t *testing.T, db *sql.DB, query string, args ...any) int {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(query, args...).Scan(&got); err != nil {
+		t.Fatalf("query scalar %q: %v", query, err)
+	}
+	return got
+}
+
+func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
+	db := openTestDB(t)
+
+	for _, table := range []string{
+		"users", "sessions", "invites", "user_settings", "slots",
+		"meta", "polls", "poll_slots", "votes", "sync_log",
+	} {
+		if got := scalarInt(t, db,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table); got != 1 {
+			t.Errorf("table %q count = %d, want 1", table, got)
+		}
+	}
+	for _, index := range []string{"idx_slots_date", "idx_poll_slots_poll"} {
+		if got := scalarInt(t, db,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index); got != 1 {
+			t.Errorf("index %q count = %d, want 1", index, got)
+		}
+	}
+
+	if got := scalarInt(t, db, `PRAGMA foreign_keys`); got != 1 {
+		t.Errorf("foreign_keys = %d, want 1", got)
+	}
+	if got := scalarInt(t, db, `PRAGMA busy_timeout`); got != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", got)
+	}
+	var journalMode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Errorf("journal_mode = %q, want wal", journalMode)
+	}
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections = %d, want 1", got)
+	}
+}
+
+func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	legacySchema := `
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			name TEXT NOT NULL,
+			password_hash TEXT NOT NULL,
+			is_admin INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE sessions (
+			token TEXT PRIMARY KEY,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			expires_at TEXT NOT NULL
+		);
+		CREATE TABLE invites (
+			token TEXT PRIMARY KEY,
+			created_by INTEGER NOT NULL REFERENCES users(id),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			used_by INTEGER REFERENCES users(id),
+			used_at TEXT
+		);
+		CREATE TABLE user_settings (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			weekdays TEXT NOT NULL DEFAULT '[0,1,2,3,4]',
+			time_start TEXT NOT NULL DEFAULT '19:00',
+			time_end TEXT NOT NULL DEFAULT '21:00',
+			days_ahead INTEGER NOT NULL DEFAULT 10,
+			min_duration INTEGER NOT NULL DEFAULT 60
+		);
+		INSERT INTO users (id, email, name, password_hash) VALUES (1, 'legacy@example.com', 'Legacy', 'hash');
+		INSERT INTO sessions (token, user_id, expires_at) VALUES ('raw-session-token', 1, '2099-01-01 00:00:00');
+		INSERT INTO user_settings (user_id) VALUES (1);
+		INSERT INTO invites (token, created_by, used_by, used_at) VALUES ('used-invite', 1, 1, datetime('now'));
+	`
+	if _, err := legacy.Exec(legacySchema); err != nil {
+		legacy.Close()
+		t.Fatalf("create legacy database: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatalf("migrate legacy database: %v", err)
+	}
+
+	var locations, notifications string
+	if err := db.QueryRow(`SELECT locations, notifications FROM user_settings WHERE user_id = 1`).
+		Scan(&locations, &notifications); err != nil {
+		db.Close()
+		t.Fatalf("read migrated settings: %v", err)
+	}
+	if locations != "[]" || notifications != "{}" {
+		t.Errorf("settings defaults = (%q, %q), want ([], {})", locations, notifications)
+	}
+
+	var kind string
+	var disabled, uses int
+	var email sql.NullString
+	if err := db.QueryRow(`SELECT kind, disabled, uses, email FROM invites WHERE token = 'used-invite'`).
+		Scan(&kind, &disabled, &uses, &email); err != nil {
+		db.Close()
+		t.Fatalf("read migrated invite: %v", err)
+	}
+	if kind != "single" || disabled != 0 || uses != 1 || email.Valid {
+		t.Errorf("invite migration = kind %q, disabled %d, uses %d, email %#v", kind, disabled, uses, email)
+	}
+
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, "raw-session-token"); got != 0 {
+		t.Errorf("plaintext session count = %d, want 0", got)
+	}
+	hashed := hashToken("raw-session-token")
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, hashed); got != 1 {
+		t.Errorf("hashed session count = %d, want 1", got)
+	}
+	if got := getMeta(db, "sessions_hashed"); got != "1" {
+		t.Errorf("sessions_hashed = %q, want 1", got)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migrated database: %v", err)
+	}
+
+	// Reopening must neither double-hash sessions nor duplicate existing data.
+	db, err = openDB(path)
+	if err != nil {
+		t.Fatalf("reopen migrated database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, hashed); got != 1 {
+		t.Errorf("hashed session count after reopen = %d, want 1", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM users`); got != 1 {
+		t.Errorf("user count after reopen = %d, want 1", got)
+	}
+}
+
+func TestSchemaEnforcesIdentityAndForeignKeys(t *testing.T) {
+	db := openTestDB(t)
+
+	res, err := db.Exec(`INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)`,
+		"Player@example.com", "Player", "hash")
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	userID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("read user id: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)`,
+		"player@EXAMPLE.com", "Duplicate", "hash"); err == nil {
+		t.Fatal("case-insensitive duplicate email insert succeeded")
+	}
+
+	if _, err := db.Exec(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
+		"session", userID, "2099-01-01 00:00:00"); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_settings (user_id) VALUES (?)`, userID); err != nil {
+		t.Fatalf("insert settings: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM users WHERE id = ?`, userID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, userID); got != 0 {
+		t.Errorf("session count after user deletion = %d, want 0", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM user_settings WHERE user_id = ?`, userID); got != 0 {
+		t.Errorf("settings count after user deletion = %d, want 0", got)
+	}
+}
+
+func TestVoteCompositeKeyAndPollCascade(t *testing.T) {
+	db := openTestDB(t)
+
+	res, err := db.Exec(`INSERT INTO users (email, name, password_hash) VALUES ('voter@example.com', 'Voter', 'hash')`)
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	userID, _ := res.LastInsertId()
+	res, err = db.Exec(`INSERT INTO polls (creator_id, title) VALUES (?, 'When?')`, userID)
+	if err != nil {
+		t.Fatalf("insert poll: %v", err)
+	}
+	pollID, _ := res.LastInsertId()
+	res, err = db.Exec(`INSERT INTO poll_slots (poll_id, date, time, duration_minutes, location)
+		VALUES (?, '2099-01-01', '19:00', 60, 'Club')`, pollID)
+	if err != nil {
+		t.Fatalf("insert poll slot: %v", err)
+	}
+	slotID, _ := res.LastInsertId()
+	if _, err := db.Exec(`INSERT INTO votes (poll_slot_id, user_id, vote) VALUES (?, ?, 1)`, slotID, userID); err != nil {
+		t.Fatalf("insert vote: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO votes (poll_slot_id, user_id, vote) VALUES (?, ?, 0)`, slotID, userID); err == nil {
+		t.Fatal("duplicate vote insert succeeded")
+	}
+
+	if _, err := db.Exec(`DELETE FROM polls WHERE id = ?`, pollID); err != nil {
+		t.Fatalf("delete poll: %v", err)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM poll_slots WHERE poll_id = ?`, pollID); got != 0 {
+		t.Errorf("poll slot count after poll deletion = %d, want 0", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM votes WHERE poll_slot_id = ?`, slotID); got != 0 {
+		t.Errorf("vote count after poll deletion = %d, want 0", got)
+	}
+}
+
+func TestDomainAndSyncWritesShareTransactionBoundary(t *testing.T) {
+	db := openTestDB(t)
+
+	res, err := db.Exec(`INSERT INTO users (email, name, password_hash) VALUES ('creator@example.com', 'Creator', 'hash')`)
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	userID, _ := res.LastInsertId()
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin rollback transaction: %v", err)
+	}
+	res, err = tx.Exec(`INSERT INTO polls (creator_id, title) VALUES (?, 'Rolled back')`, userID)
+	if err != nil {
+		t.Fatalf("insert rolled-back poll: %v", err)
+	}
+	pollID, _ := res.LastInsertId()
+	if err := appendSync(tx, "poll", "rollback", "upsert", map[string]int64{"id": pollID}, 0); err != nil {
+		t.Fatalf("append rolled-back sync event: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback transaction: %v", err)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM polls WHERE id = ?`, pollID); got != 0 {
+		t.Errorf("rolled-back poll count = %d, want 0", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'rollback'`); got != 0 {
+		t.Errorf("rolled-back sync count = %d, want 0", got)
+	}
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatalf("begin commit transaction: %v", err)
+	}
+	res, err = tx.Exec(`INSERT INTO polls (creator_id, title) VALUES (?, 'Committed')`, userID)
+	if err != nil {
+		t.Fatalf("insert committed poll: %v", err)
+	}
+	pollID, _ = res.LastInsertId()
+	if err := appendSync(tx, "poll", "commit", "upsert", map[string]int64{"id": pollID}, 0); err != nil {
+		t.Fatalf("append committed sync event: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM polls WHERE id = ?`, pollID); got != 1 {
+		t.Errorf("committed poll count = %d, want 1", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'commit'`); got != 1 {
+		t.Errorf("committed sync count = %d, want 1", got)
+	}
+}
