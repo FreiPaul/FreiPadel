@@ -14,6 +14,8 @@ services:
     volumes:
       # SQLite database + scraper config.json live here
       - ./data:/data
+    env_file:
+      - ./data/production.env
     environment:
       # How often to re-scrape court availability
       SCRAPE_INTERVAL_MINUTES: "30"

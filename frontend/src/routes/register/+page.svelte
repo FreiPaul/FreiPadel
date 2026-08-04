@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, ApiError, type User } from '$lib/api';
+	import { api, ApiError, type Me } from '$lib/api';
 	import { auth } from '$lib/auth.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -21,16 +21,21 @@
 	let needsSetup = $state<boolean | null>(null);
 	let inviteValid = $state<boolean | null>(null);
 	let inviteReason = $state('');
+	let emailInvite = $state<boolean>(false);
 
 	onMount(() => {
 		api.get<{ needs_setup: boolean }>('/api/auth/setup').then((r) => {
 			needsSetup = r.needs_setup;
 			if (!r.needs_setup && token) {
 				api
-					.get<{ valid: boolean; reason?: string }>(`/api/invites/${token}/check`)
+					.get<{ valid: boolean; reason?: string; email: string }>(`/api/invites/${token}/check`)
 					.then((res) => {
 						inviteValid = res.valid;
 						inviteReason = res.reason ?? '';
+						email = res.email
+						if (res.email && res.email.length > 0) {
+							emailInvite = true;
+						}
 					})
 					.catch(() => (inviteValid = false));
 			}
@@ -44,7 +49,7 @@
 		error = '';
 		loading = true;
 		try {
-			auth.user = await api.post<User>('/api/auth/register', {
+			auth.me = await api.post<Me>('/api/auth/register', {
 				invite_token: token,
 				name,
 				email,
@@ -94,7 +99,7 @@
 					</div>
 					<div class="grid gap-2">
 						<Label for="email">Email</Label>
-						<Input id="email" type="email" bind:value={email} required autocomplete="email" />
+						<Input id="email" type="email" bind:value={email} disabled={emailInvite} required autocomplete="email" />
 					</div>
 					<div class="grid gap-2">
 						<Label for="password">Password</Label>

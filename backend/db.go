@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS invites (
 	created_at TEXT NOT NULL DEFAULT (datetime('now')),
 	used_by    INTEGER REFERENCES users(id), -- single invites: who redeemed it
 	used_at    TEXT,
-	kind       TEXT NOT NULL DEFAULT 'single', -- 'single' (one-time) | 'group' (reusable)
+	email      TEXT,
+	kind       TEXT NOT NULL DEFAULT 'single', -- 'single' (one-time) | 'group' (reusable) | 'email' (bound to email)
 	disabled   INTEGER NOT NULL DEFAULT 0,
 	uses       INTEGER NOT NULL DEFAULT 0
 );
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS user_settings (
 	time_end     TEXT NOT NULL DEFAULT '21:00',
 	days_ahead   INTEGER NOT NULL DEFAULT 10,
 	min_duration INTEGER NOT NULL DEFAULT 60,
-	locations    TEXT NOT NULL DEFAULT '[]' -- JSON array of location names; empty = all
+	locations    TEXT NOT NULL DEFAULT '[]', -- JSON array of location names; empty = all
+	notifications TEXT NOT NULL DEFAULT '{}' -- JSON object: notification key -> bool
 );
 
 CREATE TABLE IF NOT EXISTS slots (
@@ -120,11 +122,14 @@ func openDB(path string) (*sql.DB, error) {
 	// Migrations for databases created before these columns existed;
 	// the duplicate-column errors on fresh databases are expected.
 	_, _ = db.Exec(`ALTER TABLE user_settings ADD COLUMN locations TEXT NOT NULL DEFAULT '[]'`)
+	_, _ = db.Exec(`ALTER TABLE user_settings ADD COLUMN notifications TEXT NOT NULL DEFAULT '{}'`)
 	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN kind TEXT NOT NULL DEFAULT 'single'`)
 	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0`)
 	// Backfill uses for invites redeemed before the counter existed.
 	_, _ = db.Exec(`UPDATE invites SET uses = 1 WHERE used_by IS NOT NULL AND uses = 0`)
+
+	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN email TEXT`)
 
 	if err := migrateHashSessions(db); err != nil {
 		return nil, fmt.Errorf("hash existing sessions: %w", err)

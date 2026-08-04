@@ -14,6 +14,7 @@ import (
 	"time"
 	_ "time/tzdata" // so Europe/Berlin works in scratch/alpine containers
 
+	"freipadel/emailer"
 	"freipadel/scraper"
 	"freipadel/telegram"
 )
@@ -34,6 +35,7 @@ type App struct {
 	hub *syncHub
 
 	telegramSender telegram.TelegramSender
+	emailer        *emailer.Emailer
 }
 
 func envOr(key, fallback string) string {
@@ -83,6 +85,12 @@ func main() {
 		tz:             tz,
 		secureCookies:  os.Getenv("COOKIE_SECURE") == "1",
 		telegramSender: *telegram.NewSender(scrapeCfg.Telegram.BotToken),
+		emailer:        emailer.FromEnv(),
+	}
+	if app.emailer.Configured() {
+		log.Printf("SMTP emailer configured")
+	} else {
+		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS and EMAILER_ENABLED=\"1\")")
 	}
 	app.hub = newSyncHub(db)
 

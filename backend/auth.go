@@ -25,6 +25,11 @@ type User struct {
 	IsAdmin bool   `json:"is_admin"`
 }
 
+type Me struct {
+	User           User `json:"user"`
+	EmailerEnabled bool `json:"emailer_enabled"`
+}
+
 // requireAuth wraps a handler and resolves the current user from the session cookie.
 func (a *App) requireAuth(next func(w http.ResponseWriter, r *http.Request, u *User)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -137,9 +142,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !firstUser {
 		var used sql.NullInt64
 		var kind string
+		var email string
 		var disabled int
-		err := a.db.QueryRow(`SELECT used_by, kind, disabled FROM invites WHERE token = ?`,
-			req.InviteToken).Scan(&used, &kind, &disabled)
+		err := a.db.QueryRow(`SELECT used_by, kind, disabled, email FROM invites WHERE token = ?`,
+			req.InviteToken).Scan(&used, &kind, &disabled, &email)
 		if err == sql.ErrNoRows {
 			httpError(w, http.StatusForbidden, "invalid invite link")
 			return
@@ -154,6 +160,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		if kind != "group" && used.Valid {
 			httpError(w, http.StatusForbidden, "this invite link has already been used")
+			return
+		}
+		if kind == "email" && req.Email != email {
+			httpError(w, http.StatusForbidden, "this invite belongs to another email")
 			return
 		}
 	}
@@ -202,7 +212,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	writeJSON(w, http.StatusCreated, User{ID: userID, Email: req.Email, Name: req.Name, IsAdmin: firstUser})
+	writeJSON(w, http.StatusCreated, Me{
+		User:           User{ID: userID, Email: req.Email, Name: req.Name, IsAdmin: firstUser},
+		EmailerEnabled: a.emailer.Configured()},
+	)
 
 	// notify admin via telegram
 	a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("New FreiPadel registration: ", req.Name))
@@ -234,7 +247,12 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+
+	me := Me{
+		User:           u,
+		EmailerEnabled: a.emailer.Configured(),
+	}
+	writeJSON(w, http.StatusOK, me)
 }
 
 // POST /api/auth/logout
@@ -256,5 +274,9 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/auth/me
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request, u *User) {
-	writeJSON(w, http.StatusOK, u)
+	me := Me{
+		User:           *u,
+		EmailerEnabled: a.emailer.Configured(),
+	}
+	writeJSON(w, http.StatusOK, me)
 }

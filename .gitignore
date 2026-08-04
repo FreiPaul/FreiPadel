@@ -17,8 +17,11 @@ logic/
 
 # private scrape connectors — kept out of this repo. Drop *.private.go files
 # into backend/scraper/ (copy or symlink) for a real deployment; without them
-# the app falls back to the built-in mock source.
+# the app falls back to the built-in mock source. Their tests and fixtures are
+# private too, so a checkout without the connectors still builds `go test ./...`.
 backend/scraper/*.private.go
+backend/scraper/*.private_test.go
+backend/scraper/testdata/
 
 # misc
 .DS_Store

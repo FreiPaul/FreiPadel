@@ -8,6 +8,8 @@
 
 SHIP_HOST ?= tunnel
 SHIP_DIR  ?= /opt/freipadel
+PROD_ENV  ?= production.env
+REMOTE_PROD_ENV := $(SHIP_DIR)/data/production.env
 
 # Back up the server's SQLite db before deploying — but only if it exists,
 # so a fresh server (no db yet) doesn't fail the deploy.
@@ -23,17 +25,26 @@ TAR_EXCLUDES = \
 	--exclude ./frontend/build \
 	--exclude ./backend/static \
 	--exclude ./backend/freipadel \
+	--exclude '*.env' \
 	--exclude ./data \
 	--exclude ./logic/venv \
 	--exclude ./logic/__pycache__
 
-.PHONY: ship ship-local-build logs status local
+.PHONY: check-production-env ship ship-local-build logs status local run-backend run-frontend
 
-ship:
+check-production-env:
+	@test -f "$(PROD_ENV)" || { echo "Missing $(PROD_ENV). Fill it with the SMTP credentials before shipping." >&2; exit 1; }
+	@for key in SMTP_HOST SMTP_USER SMTP_PASS; do \
+		grep -Eq "^$${key}=.+" "$(PROD_ENV)" || { echo "Missing or empty $${key} in $(PROD_ENV)." >&2; exit 1; }; \
+	done
+
+ship: check-production-env
 	@echo "→ syncing source to $(SHIP_HOST):$(SHIP_DIR)"
-	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR) && find $(SHIP_DIR) -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +'
+	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR)/data && find $(SHIP_DIR) -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +'
 	tar -czf - $(TAR_EXCLUDES) . | ssh $(SHIP_HOST) 'tar -xzf - -C $(SHIP_DIR)'
-	@echo "→ installing prod compose config (COOKIE_SECURE=1)"
+	@echo "→ installing production environment and compose config"
+	scp "$(PROD_ENV)" $(SHIP_HOST):$(REMOTE_PROD_ENV).tmp
+	ssh $(SHIP_HOST) 'chmod 600 $(REMOTE_PROD_ENV).tmp && mv $(REMOTE_PROD_ENV).tmp $(REMOTE_PROD_ENV)'
 	ssh $(SHIP_HOST) 'mv $(SHIP_DIR)/docker-compose-prod.yml $(SHIP_DIR)/docker-compose.yml'
 	@echo "→ building & starting on $(SHIP_HOST)"
 	ssh $(SHIP_HOST) '$(BACKUP_CMD)'
@@ -44,12 +55,14 @@ ship:
 # Dockerfile's --platform=$$BUILDPLATFORM stages) and push the finished image to
 # the server, skipping the server-side build entirely. The server's ./data
 # directory is never touched.
-ship-local-build:
+ship-local-build: check-production-env
 	@echo "→ building linux/amd64 image locally"
 	docker buildx build --platform linux/amd64 -t freipadel:latest --load .
-	@echo "→ syncing prod compose config (COOKIE_SECURE=1) to $(SHIP_HOST):$(SHIP_DIR)"
-	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR)'
+	@echo "→ syncing production environment and compose config to $(SHIP_HOST):$(SHIP_DIR)"
+	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR)/data'
 	scp docker-compose-prod.yml $(SHIP_HOST):$(SHIP_DIR)/docker-compose.yml
+	scp "$(PROD_ENV)" $(SHIP_HOST):$(REMOTE_PROD_ENV).tmp
+	ssh $(SHIP_HOST) 'chmod 600 $(REMOTE_PROD_ENV).tmp && mv $(REMOTE_PROD_ENV).tmp $(REMOTE_PROD_ENV)'
 	@echo "→ shipping image (docker save | ssh | docker load)"
 	docker save freipadel:latest | gzip | ssh $(SHIP_HOST) 'gunzip | docker load'
 	@echo "→ backing up db & starting on $(SHIP_HOST)"
@@ -62,6 +75,15 @@ logs:
 
 status:
 	ssh $(SHIP_HOST) 'cd $(SHIP_DIR) && docker compose ps'
+
+# Run the backend directly (not in Docker) with backend/.env loaded into the
+# environment. make runs recipes in sh, so set -a / . / set +a are all POSIX.
+run-backend:
+	cd backend && set -a && . ./.env && set +a && go run .
+
+# Run the SvelteKit dev server (Vite) with hot reload.
+run-frontend:
+	cd frontend && npm run dev
 
 # Run the local docker stack (same as on the server)
 local:

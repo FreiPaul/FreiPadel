@@ -5,6 +5,11 @@ export interface User {
 	is_admin: boolean;
 }
 
+export interface Me {
+	user: User;
+	emailer_enabled: boolean;
+}
+
 export interface Settings {
 	weekdays: number[]; // 0=Monday … 6=Sunday
 	time_start: string;
@@ -69,8 +74,9 @@ export interface Poll {
 
 export interface Invite {
 	token: string;
-	kind: 'single' | 'group';
+	kind: 'single' | 'group' | 'email';
 	created_at: string;
+	email: string | null;
 	used_by: string | null;
 	used_at: string | null;
 	disabled: boolean;

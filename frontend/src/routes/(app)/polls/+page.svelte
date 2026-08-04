@@ -59,7 +59,8 @@
         const slots = p.slots.map((s) => {
             const votes = slotVotes(s.id);
             const [_, week] = getWeekNumber(s.date);
-            const mine = votes.find((v) => v.user_id === auth.user?.id);
+            const mine = votes.find((v) => v.user_id === auth.me?.user?.id);
+
             const expired =
                 s.date < today || (s.date === today && s.time <= nowTime);
             return {
@@ -102,11 +103,11 @@
     );
 
     async function vote(poll: PollView, slot: SlotView, value: boolean) {
-        if (!auth.user) return;
+        if (!auth.me?.user) return;
         // Clicking the same answer again clears the vote.
         const newVote = slot.my_vote === value ? null : value;
         try {
-            await castVote(poll.id, slot.id, newVote, auth.user);
+            await castVote(poll.id, slot.id, newVote, auth.me.user);
         } catch {
             toast.error("Could not save your vote");
         }
@@ -142,7 +143,7 @@
     }
 
     function canManage(poll: PollView): boolean {
-        return auth.user?.id === poll.creator_id || !!auth.user?.is_admin;
+        return auth.me?.user?.id === poll.creator_id || !!auth.me?.user?.is_admin;
     }
 </script>
 

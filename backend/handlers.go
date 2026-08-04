@@ -3,33 +3,62 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"html/template"
+	"maps"
 	"net/http"
 	"regexp"
 	"strconv"
 	"time"
+
+	"freipadel/scraper"
 )
 
 var timeRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
 type Settings struct {
-	Weekdays    []int    `json:"weekdays"` // 0=Monday … 6=Sunday (matches the Python logic)
-	TimeStart   string   `json:"time_start"`
-	TimeEnd     string   `json:"time_end"`
-	DaysAhead   int      `json:"days_ahead"`
-	MinDuration int      `json:"min_duration"`
-	Locations   []string `json:"locations"` // empty = all locations
+	Weekdays      []int           `json:"weekdays"` // 0=Monday … 6=Sunday (matches the Python logic)
+	TimeStart     string          `json:"time_start"`
+	TimeEnd       string          `json:"time_end"`
+	DaysAhead     int             `json:"days_ahead"`
+	MinDuration   int             `json:"min_duration"`
+	Locations     []string        `json:"locations"`     // empty = all locations
+	Notifications map[string]bool `json:"notifications"` // notification key -> enabled
+}
+
+// notificationDefaults is the source of truth for which notification keys exist
+// and their default value. Add a key here to introduce a new notification type;
+// no schema change or backfill is needed — mergeNotifications fills it in for
+// every user on read.
+var notificationDefaults = map[string]bool{
+	"slot_available": true,
+	"poll_created":   true,
+}
+
+// mergeNotifications overlays a user's stored preferences on top of the
+// defaults, dropping any unknown/stale keys. This is what makes the setting
+// extendible: the stored JSON is opaque, but the known keys live in code.
+func mergeNotifications(stored map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(notificationDefaults))
+	maps.Copy(out, notificationDefaults)
+	for k, v := range stored {
+		if _, known := notificationDefaults[k]; known {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (a *App) loadSettings(userID int64) (Settings, error) {
 	var s Settings
-	var weekdaysJSON, locationsJSON string
-	err := a.db.QueryRow(`SELECT weekdays, time_start, time_end, days_ahead, min_duration, locations
+	var weekdaysJSON, locationsJSON, notificationsJSON string
+	err := a.db.QueryRow(`SELECT weekdays, time_start, time_end, days_ahead, min_duration, locations, notifications
 		FROM user_settings WHERE user_id = ?`, userID).
-		Scan(&weekdaysJSON, &s.TimeStart, &s.TimeEnd, &s.DaysAhead, &s.MinDuration, &locationsJSON)
+		Scan(&weekdaysJSON, &s.TimeStart, &s.TimeEnd, &s.DaysAhead, &s.MinDuration, &locationsJSON, &notificationsJSON)
 	if err == sql.ErrNoRows {
 		// Older account without a settings row — use defaults.
 		return Settings{Weekdays: []int{0, 1, 2, 3, 4}, TimeStart: "19:00", TimeEnd: "21:00",
-			DaysAhead: 10, MinDuration: 60, Locations: []string{}}, nil
+			DaysAhead: 10, MinDuration: 60, Locations: []string{}, Notifications: mergeNotifications(nil)}, nil
 	}
 	if err != nil {
 		return s, err
@@ -40,6 +69,10 @@ func (a *App) loadSettings(userID int64) (Settings, error) {
 	if err := json.Unmarshal([]byte(locationsJSON), &s.Locations); err != nil || s.Locations == nil {
 		s.Locations = []string{}
 	}
+	s.Locations = normalizeLocationNames(s.Locations)
+	var stored map[string]bool
+	_ = json.Unmarshal([]byte(notificationsJSON), &stored) // nil on error -> pure defaults
+	s.Notifications = mergeNotifications(stored)
 	return s, nil
 }
 
@@ -90,21 +123,27 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	if s.Locations == nil {
 		s.Locations = []string{}
 	}
+	s.Locations = normalizeLocationNames(s.Locations)
+	// Drop unknown keys and fill in defaults for any the client omitted, so the
+	// stored map only ever contains valid keys.
+	s.Notifications = mergeNotifications(s.Notifications)
 	weekdaysJSON, _ := json.Marshal(s.Weekdays)
 	locationsJSON, _ := json.Marshal(s.Locations)
+	notificationsJSON, _ := json.Marshal(s.Notifications)
 	tx, err := a.db.Begin()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	_, err = tx.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations, notifications)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			weekdays = excluded.weekdays, time_start = excluded.time_start,
 			time_end = excluded.time_end, days_ahead = excluded.days_ahead,
-			min_duration = excluded.min_duration, locations = excluded.locations`,
-		u.ID, string(weekdaysJSON), s.TimeStart, s.TimeEnd, s.DaysAhead, s.MinDuration, string(locationsJSON))
+			min_duration = excluded.min_duration, locations = excluded.locations,
+			notifications = excluded.notifications`,
+		u.ID, string(weekdaysJSON), s.TimeStart, s.TimeEnd, s.DaysAhead, s.MinDuration, string(locationsJSON), string(notificationsJSON))
 	if err == nil {
 		// Settings are private — the delta is only visible to its owner.
 		err = appendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", s, u.ID)
@@ -118,6 +157,19 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	}
 	a.hub.notify()
 	writeJSON(w, http.StatusOK, s)
+}
+
+func normalizeLocationNames(locations []string) []string {
+	out := make([]string, 0, len(locations))
+	seen := make(map[string]bool, len(locations))
+	for _, location := range locations {
+		location = scraper.NormalizeLocationName(location)
+		if location != "" && !seen[location] {
+			seen[location] = true
+			out = append(out, location)
+		}
+	}
+	return out
 }
 
 // SlotGroup is one pollable option: all free courts at the same
@@ -278,7 +330,8 @@ func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request, u *User) {
 
 type Invite struct {
 	Token     string  `json:"token"`
-	Kind      string  `json:"kind"` // 'single' | 'group'
+	Kind      string  `json:"kind"` // 'single' | 'group' | 'email'
+	Email     *string `json:"email"`
 	CreatedAt string  `json:"created_at"`
 	UsedBy    *string `json:"used_by"` // single invites: name of the user who redeemed it
 	UsedAt    *string `json:"used_at"`
@@ -291,10 +344,10 @@ func loadInvite(q queryer, token string) (*Invite, error) {
 	var inv Invite
 	var disabled int
 	err := q.QueryRow(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
+		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses, i.email
 		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
 		WHERE i.token = ?`, token).
-		Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses)
+		Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses, &inv.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +357,7 @@ func loadInvite(q queryer, token string) (*Invite, error) {
 
 func loadInvites(q queryer) ([]Invite, error) {
 	rows, err := q.Query(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses
+		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses, i.email
 		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
 		ORDER BY i.created_at DESC`)
 	if err != nil {
@@ -315,7 +368,7 @@ func loadInvites(q queryer) ([]Invite, error) {
 	for rows.Next() {
 		var inv Invite
 		var disabled int
-		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses); err == nil {
+		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses, &inv.Email); err == nil {
 			inv.Disabled = disabled == 1
 			invites = append(invites, inv)
 		}
@@ -326,17 +379,49 @@ func loadInvites(q queryer) ([]Invite, error) {
 // POST /api/invites — body: {"kind": "single"|"group"} (defaults to single).
 func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	var req struct {
-		Kind string `json:"kind"`
+		Kind   string `json:"kind"`
+		Email  string `json:"email"`
+		Origin string `json:"origin"`
 	}
 	// Body is optional; an empty body means a single-use invite.
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
 	if req.Kind == "" {
 		req.Kind = "single"
 	}
-	if req.Kind != "single" && req.Kind != "group" {
-		httpError(w, http.StatusBadRequest, "kind must be 'single' or 'group'")
+	if req.Origin == "" {
+		req.Origin = "https://freipadel.freipaul.com/"
+	}
+	if req.Kind != "single" && req.Kind != "group" && req.Kind != "email" {
+		httpError(w, http.StatusBadRequest, "kind must be 'single' or 'group' or 'email'")
 		return
 	}
+
+	if req.Kind == "email" && !a.emailer.Configured() {
+		httpError(w, http.StatusBadRequest, "the emailer is disabled in this deployment")
+		return
+	}
+
+	if req.Kind == "email" && req.Email == "" {
+		httpError(w, http.StatusBadRequest, "email invite must include an email address")
+		return
+	}
+
+	// check wether email is already present in db
+	var exists bool
+	err := a.db.QueryRow(
+		`SELECT (EXISTS(SELECT 1 FROM users WHERE email = ?) OR EXISTS(SELECT 1 FROM invites WHERE email = ?))`,
+		req.Email,
+		req.Email,
+	).Scan(&exists)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if exists {
+		httpError(w, http.StatusConflict, "user/invite with email already exists")
+		return
+	}
+
 	token := randomToken(16)
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -344,7 +429,7 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO invites (token, created_by, kind) VALUES (?, ?, ?)`, token, u.ID, req.Kind)
+	_, err = tx.Exec(`INSERT INTO invites (token, created_by, kind, email) VALUES (?, ?, ?, ?)`, token, u.ID, req.Kind, req.Email)
 	if err == nil {
 		var inv *Invite
 		if inv, err = loadInvite(tx, token); err == nil {
@@ -357,6 +442,16 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
+	}
+	if req.Kind == "email" {
+		// send email with invite link
+		body := fmt.Sprintf(
+			`<p>You've been invited to FreiPadel.</p>
+<p><a href="%s/register?token=%s">Accept invitation</a></p>`,
+			template.HTMLEscapeString(req.Origin),
+			template.HTMLEscapeString(token),
+		)
+		a.emailer.Send(req.Email, "You've been invited to FreiPadel", body)
 	}
 	a.hub.notify()
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "kind": req.Kind})
@@ -441,8 +536,9 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 	var used sql.NullInt64
 	var kind string
 	var disabled int
-	err := a.db.QueryRow(`SELECT used_by, kind, disabled FROM invites WHERE token = ?`, token).
-		Scan(&used, &kind, &disabled)
+	var email string
+	err := a.db.QueryRow(`SELECT used_by, kind, disabled, email FROM invites WHERE token = ?`, token).
+		Scan(&used, &kind, &disabled, &email)
 	if err == sql.ErrNoRows {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "unknown"})
 		return
@@ -459,5 +555,5 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "used"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"valid": true})
+	writeJSON(w, http.StatusOK, map[string]any{"valid": true, "email": email})
 }

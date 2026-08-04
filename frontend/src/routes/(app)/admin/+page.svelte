@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { auth } from '$lib/auth.svelte';
 	import { sync } from '$lib/sync.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -7,6 +8,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { formatTimestamp } from '$lib/format';
 	import { toast } from 'svelte-sonner';
+    import Input from '$lib/components/ui/input/input.svelte';
 
 	// Rendered straight from the sync store — no fetching on navigation, and
 	// invites flip to "used" live when a friend registers.
@@ -16,21 +18,40 @@
 	const members = $derived(
 		Object.values(sync.members).sort((a, b) => a.name.localeCompare(b.name))
 	);
-	let creating = $state(false);
+
+	const emailer_enabled = $derived(auth.me?.emailer_enabled);
 
 	function inviteURL(token: string): string {
 		return `${location.origin}/register?token=${token}`;
 	}
 
-	async function createInvite(kind: 'single' | 'group') {
-		creating = true;
+	let invite_email = $state('');
+	let inviting = $state(false);
+
+	async function createInvite(kind: 'single' | 'group' | 'email', email?: string) {
+		const normalizedEmail = email?.trim();
+		if (kind === 'email' && !normalizedEmail) {
+			toast.error('Enter an email address');
+			return;
+		}
+
+		inviting = true;
 		try {
-			const { token } = await api.post<{ token: string }>('/api/invites', { kind });
-			await copy(token); // the new row arrives as a sync delta
-		} catch {
-			toast.error('Could not create invite');
+			const { token } = await api.post<{ token: string }>('/api/invites', {
+				kind,
+				email: normalizedEmail,
+				origin: location.origin
+			});
+			if (kind === 'email') {
+				invite_email = '';
+				toast.success('Email invite sent');
+			} else {
+				await copy(token);
+			}
+		} catch (e) {
+			toast.error('Could not create invite', { description: e instanceof Error ? e.message : 'Unknown error' });
 		} finally {
-			creating = false;
+			inviting = false;
 		}
 	}
 
@@ -65,6 +86,7 @@
 </script>
 
 <div class="flex flex-col gap-6">
+
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>
 			<h1 class="text-2xl font-semibold tracking-tight">Invites</h1>
@@ -74,10 +96,10 @@
 			</p>
 		</div>
 		<div class="flex gap-2">
-			<Button variant="outline" onclick={() => createInvite('single')} disabled={creating}>
+			<Button variant="outline" onclick={() => createInvite('single')} disabled={inviting}>
 				+ One-time link
 			</Button>
-			<Button onclick={() => createInvite('group')} disabled={creating}>+ Group link</Button>
+			<Button onclick={() => createInvite('group')} disabled={inviting}>+ Group link</Button>
 		</div>
 	</div>
 
@@ -114,27 +136,60 @@
 								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
 							{/if}
 						</div>
-					{:else if invite.used_by}
-						<Badge variant="secondary">used by {invite.used_by}</Badge>
-						<span class="text-xs text-muted-foreground">{formatTimestamp(invite.used_at ?? '')}</span>
-					{:else if invite.disabled}
-						<Badge variant="secondary" class="opacity-70">disabled</Badge>
-						<div class="ml-auto">
-							<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
-						</div>
 					{:else}
-						<Badge>open</Badge>
-						<div class="ml-auto flex gap-1.5">
-							<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
-								Copy link
-							</Button>
-							<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Revoke</Button>
-						</div>
+						{#if invite.kind === 'email'}
+							<Badge variant="outline">email</Badge>
+							<span class="text-xs text-muted-foreground">{invite.email}</span>
+						{/if}
+						{#if invite.used_by}
+							<Badge variant="secondary">used by {invite.used_by}</Badge>
+							<span class="text-xs text-muted-foreground">{formatTimestamp(invite.used_at ?? '')}</span>
+						{:else if invite.disabled}
+							<Badge variant="secondary" class="opacity-70">disabled</Badge>
+							<div class="ml-auto">
+								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
+							</div>
+						{:else}
+							<Badge>open</Badge>
+							<div class="ml-auto flex gap-1.5">
+								<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
+									Copy link
+								</Button>
+								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Revoke</Button>
+							</div>
+						{/if}
 					{/if}
 				</div>
 			{/each}
 		</Card.Content>
 	</Card.Root>
+
+	<Separator />
+
+	{#if emailer_enabled}
+	<Card.Root>
+	<Card.CardContent>
+	<h3>Invite a member via e-mail. An email will be sent automatically and the invite link is only valid for the email.</h3>
+	<div class="flex gap-2 align-middle">
+        <Input
+            id="email"
+            placeholder="E-Mail"
+            bind:value={invite_email}
+			onkeydown={(e) => {
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					createInvite("email",invite_email);
+				}
+			}}
+        >
+        </Input>
+        <Button
+            onclick={() => {createInvite("email",invite_email)}}
+            disabled={inviting}>Invite member</Button>
+	</div>
+	</Card.CardContent>
+	</Card.Root>
+	{/if}
 
 	<Separator />
 
