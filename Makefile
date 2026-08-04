@@ -30,11 +30,15 @@ TAR_EXCLUDES = \
 	--exclude ./logic/venv \
 	--exclude ./logic/__pycache__
 
-.PHONY: check-production-env ship ship-local-build logs status local run-backend run-frontend
+.PHONY: check-production-env ship ship-local-build logs status local run-backend run-frontend test
+
+test:
+	cd frontend && npm run check
+	cd backend && go test ./...
 
 check-production-env:
-	@test -f "$(PROD_ENV)" || { echo "Missing $(PROD_ENV). Fill it with the SMTP credentials before shipping." >&2; exit 1; }
-	@for key in SMTP_HOST SMTP_USER SMTP_PASS; do \
+	@test -f "$(PROD_ENV)" || { echo "Missing $(PROD_ENV). Fill it with the production credentials before shipping." >&2; exit 1; }
+	@for key in SMTP_HOST SMTP_USER SMTP_PASS TELEGRAM_BOT_TOKEN TELEGRAM_ADMIN_CHAT_ID; do \
 		grep -Eq "^$${key}=.+" "$(PROD_ENV)" || { echo "Missing or empty $${key} in $(PROD_ENV)." >&2; exit 1; }; \
 	done
 

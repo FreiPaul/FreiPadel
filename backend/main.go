@@ -69,6 +69,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("load scraper config: %v", err)
 	}
+	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
+		scrapeCfg.Telegram.BotToken = token
+	}
+	if chatID := os.Getenv("TELEGRAM_ADMIN_CHAT_ID"); chatID != "" {
+		parsed, err := strconv.ParseUint(chatID, 10, 32)
+		if err != nil {
+			log.Fatalf("parse TELEGRAM_ADMIN_CHAT_ID: %v", err)
+		}
+		scrapeCfg.Telegram.AdminChatID = uint32(parsed)
+	}
 	tz, err := time.LoadLocation(scrapeCfg.Timezone)
 	if err != nil {
 		log.Fatalf("load timezone: %v", err)

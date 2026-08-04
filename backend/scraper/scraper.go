@@ -77,6 +77,9 @@ func (w Window) Keep(s Slot) bool {
 }
 
 type TelegramConfig struct {
+	// Deprecated: use TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID. These
+	// fields remain as a migration fallback for existing config.json files.
+	// from now on, configure Telegram via env vars just like email
 	BotToken    string `json:"botToken,omitempty"`
 	AdminChatID uint32 `json:"adminChatID,omitempty"`
 }

@@ -30,15 +30,16 @@ config live in `./data/` (created on first start).
 
 ## Production deployment
 
-Copy the SMTP credentials into the Git-ignored `production.env` file at the
-repository root, then run `make ship` (or `make ship-local-build`). The deploy
-uploads that file separately to `/opt/freipadel/data/production.env`, sets its
-permissions to `0600`, and references it from the production Compose file.
+Copy the SMTP and Telegram credentials into the Git-ignored
+`data/production.env` file, then run `make ship` (or
+`make ship-local-build`). The deploy uploads that file separately to
+`/opt/freipadel/data/production.env`, sets its permissions to `0600`, and
+references it from the production Compose file.
 
 The ship targets stop before changing the server if `SMTP_HOST`, `SMTP_USER`,
-or `SMTP_PASS` is missing. Do not add credentials to
-`docker-compose-prod.yml`; `.env` files are excluded from both the source
-archive and Docker build context.
+`SMTP_PASS`, `TELEGRAM_BOT_TOKEN`, or `TELEGRAM_ADMIN_CHAT_ID` is missing. Do
+not add credentials to `docker-compose-prod.yml`; `.env` files are excluded
+from both the source archive and Docker build context.
 
 ## Environment variables
 
@@ -55,6 +56,8 @@ archive and Docker build context.
 | `SMTP_USER`               | —          | SMTP authentication username         |
 | `SMTP_PASS`               | —          | SMTP authentication password         |
 | `MAIL_FROM`               | SMTP user  | Sender email address                 |
+| `TELEGRAM_BOT_TOKEN`      | —          | Telegram bot API token               |
+| `TELEGRAM_ADMIN_CHAT_ID`  | —          | Telegram admin chat ID               |
 
 ## How slot polls work
 
