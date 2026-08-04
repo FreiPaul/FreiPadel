@@ -17,12 +17,14 @@ import (
 	"freipadel/emailer"
 	"freipadel/scraper"
 	"freipadel/telegram"
+	"gorm.io/gorm"
 )
 
 var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 type App struct {
 	db            *sql.DB
+	orm           *gorm.DB
 	scrapeCfg     scraper.Config
 	scraper       *scraper.Scraper
 	tz            *time.Location
@@ -60,10 +62,11 @@ func main() {
 		log.Fatalf("create data dir: %v", err)
 	}
 
-	db, err := openDB(filepath.Join(dataDir, "freipadel.db"))
+	database, err := openDB(filepath.Join(dataDir, "freipadel.db"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
+	db := database.SQL
 
 	scrapeCfg, err := scraper.LoadConfig(filepath.Join(dataDir, "config.json"))
 	if err != nil {
@@ -90,6 +93,7 @@ func main() {
 
 	app := &App{
 		db:             db,
+		orm:            database.ORM,
 		scrapeCfg:      scrapeCfg,
 		scraper:        scr,
 		tz:             tz,

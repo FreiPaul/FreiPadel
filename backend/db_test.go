@@ -8,12 +8,13 @@ import (
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := openDB(filepath.Join(t.TempDir(), "freipadel.db"))
+	database, err := openDB(filepath.Join(t.TempDir(), "freipadel.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
+	db := database.SQL
 	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
+		if err := database.Close(); err != nil {
 			t.Errorf("close database: %v", err)
 		}
 	})
@@ -66,6 +67,34 @@ func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
 	}
 }
 
+func TestOpenDBGORMAndSQLShareConnectionPool(t *testing.T) {
+	database, err := openDB(filepath.Join(t.TempDir(), "freipadel.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	sqlDB, err := database.ORM.DB()
+	if err != nil {
+		t.Fatalf("get GORM connection pool: %v", err)
+	}
+	if sqlDB != database.SQL {
+		t.Fatal("GORM and compatibility SQL handles use different connection pools")
+	}
+
+	user := userModel{Email: "gorm@example.com", Name: "GORM", PasswordHash: "hash"}
+	if err := database.ORM.Create(&user).Error; err != nil {
+		t.Fatalf("create user through GORM: %v", err)
+	}
+	if user.ID == 0 {
+		t.Error("GORM did not populate the generated user ID")
+	}
+	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM users WHERE id = ? AND email = ?`,
+		user.ID, user.Email); got != 1 {
+		t.Errorf("user count through SQL handle = %d, want 1", got)
+	}
+}
+
 func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	legacy, err := sql.Open("sqlite", path)
@@ -114,10 +143,11 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 		t.Fatalf("close legacy database: %v", err)
 	}
 
-	db, err := openDB(path)
+	database, err := openDB(path)
 	if err != nil {
 		t.Fatalf("migrate legacy database: %v", err)
 	}
+	db := database.SQL
 
 	var locations, notifications string
 	if err := db.QueryRow(`SELECT locations, notifications FROM user_settings WHERE user_id = 1`).
@@ -156,11 +186,12 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	}
 
 	// Reopening must neither double-hash sessions nor duplicate existing data.
-	db, err = openDB(path)
+	database, err = openDB(path)
 	if err != nil {
 		t.Fatalf("reopen migrated database: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	db = database.SQL
+	t.Cleanup(func() { _ = database.Close() })
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, hashed); got != 1 {
 		t.Errorf("hashed session count after reopen = %d, want 1", got)
 	}

@@ -24,11 +24,12 @@ Usage:
 // access from a docker exec safe.
 func runCLI(args []string) {
 	dataDir := envOr("DATA_DIR", "./data")
-	db, err := openDB(filepath.Join(dataDir, "freipadel.db"))
+	database, err := openDB(filepath.Join(dataDir, "freipadel.db"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer database.Close()
+	db := database.SQL
 
 	switch args[0] {
 	case "list-users":

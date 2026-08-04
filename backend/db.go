@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	"github.com/libtnb/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const schema = `
@@ -108,15 +110,40 @@ CREATE TABLE IF NOT EXISTS sync_log (
 );
 `
 
-func openDB(path string) (*sql.DB, error) {
+// database exposes GORM and database/sql views of the same connection pool.
+// The SQL handle is temporary compatibility scaffolding while callers are
+// migrated to GORM feature by feature.
+type database struct {
+	ORM *gorm.DB
+	SQL *sql.DB
+}
+
+func (d *database) Close() error {
+	return d.SQL.Close()
+}
+
+func openDB(path string) (*database, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	orm, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		// Schema changes remain explicit while the query layer is migrated.
+		DisableForeignKeyConstraintWhenMigrating: true,
+		// Match the old database/sql layer, which only logged errors at the
+		// call site. In particular, expected duplicate-column migrations must
+		// not emit GORM error logs on every startup.
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
 		return nil, err
 	}
+	db, err := orm.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get sql connection pool: %w", err)
+	}
 	// modernc/sqlite works best with a single writer connection.
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	// Migrations for databases created before these columns existed;
@@ -132,9 +159,10 @@ func openDB(path string) (*sql.DB, error) {
 	_, _ = db.Exec(`ALTER TABLE invites ADD COLUMN email TEXT`)
 
 	if err := migrateHashSessions(db); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("hash existing sessions: %w", err)
 	}
-	return db, nil
+	return &database{ORM: orm, SQL: db}, nil
 }
 
 // migrateHashSessions rewrites plaintext session tokens to their hashes once, so
