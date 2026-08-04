@@ -8,7 +8,7 @@
 
 SHIP_HOST ?= tunnel
 SHIP_DIR  ?= /opt/freipadel
-PROD_ENV  ?= production.env
+PROD_ENV  ?= data/production.env
 REMOTE_PROD_ENV := $(SHIP_DIR)/data/production.env
 
 # Back up the server's SQLite db before deploying — but only if it exists,
