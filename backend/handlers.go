@@ -251,7 +251,7 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"slots":           groups,
-		"last_fetched_at": getMeta(a.db, "last_fetched_at"),
+		"last_fetched_at": a.store.GetMeta("last_fetched_at"),
 		"scraping":        a.isScraping(),
 	})
 }

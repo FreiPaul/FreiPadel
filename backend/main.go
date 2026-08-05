@@ -15,6 +15,7 @@ import (
 	_ "time/tzdata" // so Europe/Berlin works in scratch/alpine containers
 
 	"freipadel/emailer"
+	"freipadel/internal/store"
 	"freipadel/scraper"
 	"freipadel/telegram"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ import (
 var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 type App struct {
+	store         *store.Store
 	db            *sql.DB
 	orm           *gorm.DB
 	scrapeCfg     scraper.Config
@@ -62,11 +64,11 @@ func main() {
 		log.Fatalf("create data dir: %v", err)
 	}
 
-	database, err := openDB(filepath.Join(dataDir, "freipadel.db"))
+	storage, err := store.Open(filepath.Join(dataDir, "freipadel.db"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	db := database.SQL
+	db := storage.SQL
 
 	scrapeCfg, err := scraper.LoadConfig(filepath.Join(dataDir, "config.json"))
 	if err != nil {
@@ -92,8 +94,9 @@ func main() {
 	}
 
 	app := &App{
+		store:          storage,
 		db:             db,
-		orm:            database.ORM,
+		orm:            storage.ORM,
 		scrapeCfg:      scrapeCfg,
 		scraper:        scr,
 		tz:             tz,
@@ -226,7 +229,7 @@ func (a *App) triggerScrape() bool {
 
 func (a *App) scrapeLoop(interval time.Duration) {
 	// on startup: respect last_fetched_at from database
-	lastScraped := getMeta(a.db, "last_fetched_at")
+	lastScraped := a.store.GetMeta("last_fetched_at")
 	lastScrapedTime, err := time.Parse(time.RFC3339, lastScraped)
 	if err == nil {
 		a.mu.Lock()
@@ -302,7 +305,7 @@ func (a *App) runScrape() {
 		log.Printf("scrape store: %v", err)
 		return
 	}
-	_ = setMeta(a.db, "last_fetched_at", fetchedAt)
+	_ = a.store.SetMeta("last_fetched_at", fetchedAt)
 	a.hub.notify()
 	log.Printf("scrape done: %d slots in %s", len(slots), time.Since(start).Round(time.Millisecond))
 }

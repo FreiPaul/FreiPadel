@@ -1,9 +1,10 @@
-package main
+package store
 
 import (
 	"database/sql"
 	"fmt"
 
+	"freipadel/internal/sessiontoken"
 	"github.com/libtnb/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -110,19 +111,19 @@ CREATE TABLE IF NOT EXISTS sync_log (
 );
 `
 
-// database exposes GORM and database/sql views of the same connection pool.
+// Store exposes GORM and database/sql views of the same connection pool.
 // The SQL handle is temporary compatibility scaffolding while callers are
 // migrated to GORM feature by feature.
-type database struct {
+type Store struct {
 	ORM *gorm.DB
 	SQL *sql.DB
 }
 
-func (d *database) Close() error {
-	return d.SQL.Close()
+func (s *Store) Close() error {
+	return s.SQL.Close()
 }
 
-func openDB(path string) (*database, error) {
+func Open(path string) (*Store, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path)
 	orm, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		// Schema changes remain explicit while the query layer is migrated.
@@ -154,7 +155,7 @@ func openDB(path string) (*database, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("hash existing sessions: %w", err)
 	}
-	return &database{ORM: orm, SQL: db}, nil
+	return &Store{ORM: orm, SQL: db}, nil
 }
 
 // migrateHashSessions rewrites plaintext session tokens to their hashes once, so
@@ -187,7 +188,7 @@ func migrateHashSessions(db *sql.DB) error {
 	rows.Close()
 
 	for _, t := range tokens {
-		if _, err := db.Exec(`UPDATE sessions SET token = ? WHERE token = ?`, hashToken(t), t); err != nil {
+		if _, err := db.Exec(`UPDATE sessions SET token = ? WHERE token = ?`, sessiontoken.Hash(t), t); err != nil {
 			return err
 		}
 	}
@@ -204,4 +205,15 @@ func setMeta(db *sql.DB, key, value string) error {
 	_, err := db.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
+}
+
+// GetMeta reads an application metadata value. A missing key returns an empty
+// string, matching the behavior of the compatibility layer it replaces.
+func (s *Store) GetMeta(key string) string {
+	return getMeta(s.SQL, key)
+}
+
+// SetMeta inserts or replaces an application metadata value.
+func (s *Store) SetMeta(key, value string) error {
+	return setMeta(s.SQL, key, value)
 }

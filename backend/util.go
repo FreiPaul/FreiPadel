@@ -2,10 +2,11 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+
+	"freipadel/internal/sessiontoken"
 )
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -37,6 +38,5 @@ func randomToken(nBytes int) string {
 }
 
 func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return sessiontoken.Hash(token)
 }

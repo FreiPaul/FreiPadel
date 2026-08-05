@@ -278,7 +278,7 @@ func (a *App) compactSyncLog() {
 	if _, err := a.db.Exec(`DELETE FROM sync_log WHERE id <= ?`, maxOld); err != nil {
 		return
 	}
-	_ = setMeta(a.db, "sync_trimmed_to", strconv.FormatInt(maxOld, 10))
+	_ = a.store.SetMeta("sync_trimmed_to", strconv.FormatInt(maxOld, 10))
 }
 
 // --- HTTP handlers ---
@@ -360,7 +360,7 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 		"votes":           votes,
 		"invites":         invites,
 		"slot_keys":       keys,
-		"last_fetched_at": getMeta(a.db, "last_fetched_at"),
+		"last_fetched_at": a.store.GetMeta("last_fetched_at"),
 		"scraping":        a.isScraping(),
 	})
 }
@@ -451,7 +451,7 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 
 	// If compaction trimmed past the client's cursor the replay would be
 	// incomplete — tell it to re-bootstrap instead.
-	trimmedTo, _ := strconv.ParseInt(getMeta(a.db, "sync_trimmed_to"), 10, 64)
+	trimmedTo, _ := strconv.ParseInt(a.store.GetMeta("sync_trimmed_to"), 10, 64)
 	if lastID < trimmedTo {
 		fmt.Fprint(w, "event: reset\ndata: {}\n\n")
 		lastID = since

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"freipadel/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -24,12 +25,12 @@ Usage:
 // access from a docker exec safe.
 func runCLI(args []string) {
 	dataDir := envOr("DATA_DIR", "./data")
-	database, err := openDB(filepath.Join(dataDir, "freipadel.db"))
+	storage, err := store.Open(filepath.Join(dataDir, "freipadel.db"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer database.Close()
-	db := database.SQL
+	defer storage.Close()
+	db := storage.SQL
 
 	switch args[0] {
 	case "list-users":

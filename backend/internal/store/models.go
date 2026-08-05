@@ -1,4 +1,4 @@
-package main
+package store
 
 // These persistence models describe the existing SQLite schema. They stay
 // separate from HTTP and sync wire types so database changes cannot silently

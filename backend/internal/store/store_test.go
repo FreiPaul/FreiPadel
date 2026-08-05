@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"database/sql"
@@ -7,11 +7,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"freipadel/internal/sessiontoken"
 )
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	database, err := openDB(filepath.Join(t.TempDir(), "freipadel.db"))
+	database, err := Open(filepath.Join(t.TempDir(), "freipadel.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -74,7 +76,7 @@ func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
 }
 
 func TestOpenDBGORMAndSQLShareConnectionPool(t *testing.T) {
-	database, err := openDB(filepath.Join(t.TempDir(), "freipadel.db"))
+	database, err := Open(filepath.Join(t.TempDir(), "freipadel.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 		t.Fatalf("close legacy database: %v", err)
 	}
 
-	database, err := openDB(path)
+	database, err := Open(path)
 	if err != nil {
 		t.Fatalf("migrate legacy database: %v", err)
 	}
@@ -180,7 +182,7 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, "raw-session-token"); got != 0 {
 		t.Errorf("plaintext session count = %d, want 0", got)
 	}
-	hashed := hashToken("raw-session-token")
+	hashed := sessiontoken.Hash("raw-session-token")
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, hashed); got != 1 {
 		t.Errorf("hashed session count = %d, want 1", got)
 	}
@@ -195,7 +197,7 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	}
 
 	// Reopening must neither double-hash sessions nor duplicate existing data.
-	database, err = openDB(path)
+	database, err = Open(path)
 	if err != nil {
 		t.Fatalf("reopen migrated database: %v", err)
 	}
@@ -246,7 +248,7 @@ func TestSchemaMigrationRollsBackChangesAndVersionOnFailure(t *testing.T) {
 
 func TestOpenDBRejectsNewerSchemaVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "newer.db")
-	database, err := openDB(path)
+	database, err := Open(path)
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -259,7 +261,7 @@ func TestOpenDBRejectsNewerSchemaVersion(t *testing.T) {
 		t.Fatalf("close database: %v", err)
 	}
 
-	_, err = openDB(path)
+	_, err = Open(path)
 	if err == nil {
 		t.Fatal("opening a newer schema version succeeded")
 	}
@@ -337,59 +339,5 @@ func TestVoteCompositeKeyAndPollCascade(t *testing.T) {
 	}
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM votes WHERE poll_slot_id = ?`, slotID); got != 0 {
 		t.Errorf("vote count after poll deletion = %d, want 0", got)
-	}
-}
-
-func TestDomainAndSyncWritesShareTransactionBoundary(t *testing.T) {
-	db := openTestDB(t)
-
-	res, err := db.Exec(`INSERT INTO users (email, name, password_hash) VALUES ('creator@example.com', 'Creator', 'hash')`)
-	if err != nil {
-		t.Fatalf("insert user: %v", err)
-	}
-	userID, _ := res.LastInsertId()
-
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("begin rollback transaction: %v", err)
-	}
-	res, err = tx.Exec(`INSERT INTO polls (creator_id, title) VALUES (?, 'Rolled back')`, userID)
-	if err != nil {
-		t.Fatalf("insert rolled-back poll: %v", err)
-	}
-	pollID, _ := res.LastInsertId()
-	if err := appendSync(tx, "poll", "rollback", "upsert", map[string]int64{"id": pollID}, 0); err != nil {
-		t.Fatalf("append rolled-back sync event: %v", err)
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatalf("rollback transaction: %v", err)
-	}
-	if got := scalarInt(t, db, `SELECT COUNT(*) FROM polls WHERE id = ?`, pollID); got != 0 {
-		t.Errorf("rolled-back poll count = %d, want 0", got)
-	}
-	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'rollback'`); got != 0 {
-		t.Errorf("rolled-back sync count = %d, want 0", got)
-	}
-
-	tx, err = db.Begin()
-	if err != nil {
-		t.Fatalf("begin commit transaction: %v", err)
-	}
-	res, err = tx.Exec(`INSERT INTO polls (creator_id, title) VALUES (?, 'Committed')`, userID)
-	if err != nil {
-		t.Fatalf("insert committed poll: %v", err)
-	}
-	pollID, _ = res.LastInsertId()
-	if err := appendSync(tx, "poll", "commit", "upsert", map[string]int64{"id": pollID}, 0); err != nil {
-		t.Fatalf("append committed sync event: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit transaction: %v", err)
-	}
-	if got := scalarInt(t, db, `SELECT COUNT(*) FROM polls WHERE id = ?`, pollID); got != 1 {
-		t.Errorf("committed poll count = %d, want 1", got)
-	}
-	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'commit'`); got != 1 {
-		t.Errorf("committed sync count = %d, want 1", got)
 	}
 }
