@@ -75,6 +75,41 @@ func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
 	}
 }
 
+func TestFirstMigrationCreatesInitialSchema(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		t.Fatalf("bootstrap migration metadata: %v", err)
+	}
+
+	if err := applySchemaMigrations(db, schemaMigrations[:1]); err != nil {
+		t.Fatalf("apply first migration: %v", err)
+	}
+	for _, table := range []string{
+		"users", "sessions", "invites", "user_settings", "slots",
+		"meta", "polls", "poll_slots", "votes", "sync_log",
+	} {
+		if got := scalarInt(t, db,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table); got != 1 {
+			t.Errorf("table %q count after first migration = %d, want 1", table, got)
+		}
+	}
+	if got := getMeta(db, schemaVersionKey); got != "1" {
+		t.Errorf("schema version after first migration = %q, want 1", got)
+	}
+	if got := scalarInt(t, db,
+		`SELECT COUNT(*) FROM pragma_table_info('user_settings') WHERE name = 'locations'`); got != 1 {
+		t.Errorf("locations column count after first migration = %d, want 1", got)
+	}
+	if got := scalarInt(t, db,
+		`SELECT COUNT(*) FROM pragma_table_info('invites') WHERE name = 'kind'`); got != 0 {
+		t.Errorf("invite kind column count before second migration = %d, want 0", got)
+	}
+}
+
 func TestOpenDBGORMAndSQLShareConnectionPool(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "freipadel.db"))
 	if err != nil {

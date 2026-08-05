@@ -10,107 +10,6 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS users (
-	id            INTEGER PRIMARY KEY AUTOINCREMENT,
-	email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
-	name          TEXT NOT NULL,
-	password_hash TEXT NOT NULL,
-	is_admin      INTEGER NOT NULL DEFAULT 0,
-	created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-	token      TEXT PRIMARY KEY,
-	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	expires_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS invites (
-	token      TEXT PRIMARY KEY,
-	created_by INTEGER NOT NULL REFERENCES users(id),
-	created_at TEXT NOT NULL DEFAULT (datetime('now')),
-	used_by    INTEGER REFERENCES users(id), -- single invites: who redeemed it
-	used_at    TEXT,
-	email      TEXT,
-	kind       TEXT NOT NULL DEFAULT 'single', -- 'single' (one-time) | 'group' (reusable) | 'email' (bound to email)
-	disabled   INTEGER NOT NULL DEFAULT 0,
-	uses       INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS user_settings (
-	user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-	weekdays     TEXT NOT NULL DEFAULT '[0,1,2,3,4]',
-	time_start   TEXT NOT NULL DEFAULT '19:00',
-	time_end     TEXT NOT NULL DEFAULT '21:00',
-	days_ahead   INTEGER NOT NULL DEFAULT 10,
-	min_duration INTEGER NOT NULL DEFAULT 60,
-	locations    TEXT NOT NULL DEFAULT '[]', -- JSON array of location names; empty = all
-	notifications TEXT NOT NULL DEFAULT '{}' -- JSON object: notification key -> bool
-);
-
-CREATE TABLE IF NOT EXISTS slots (
-	id               INTEGER PRIMARY KEY AUTOINCREMENT,
-	source           TEXT NOT NULL,
-	location         TEXT NOT NULL,
-	court            TEXT NOT NULL,
-	date             TEXT NOT NULL, -- YYYY-MM-DD (local, Europe/Berlin)
-	time             TEXT NOT NULL, -- HH:MM (local)
-	duration_minutes INTEGER NOT NULL,
-	price            REAL NOT NULL DEFAULT 0,
-	currency         TEXT NOT NULL DEFAULT 'EUR'
-);
-CREATE INDEX IF NOT EXISTS idx_slots_date ON slots(date);
-
-CREATE TABLE IF NOT EXISTS meta (
-	key   TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS polls (
-	id              INTEGER PRIMARY KEY AUTOINCREMENT,
-	creator_id      INTEGER NOT NULL REFERENCES users(id),
-	title           TEXT NOT NULL,
-	status          TEXT NOT NULL DEFAULT 'active', -- active | closed
-	winning_slot_id INTEGER REFERENCES poll_slots(id),
-	created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-	closed_at       TEXT
-);
-
-CREATE TABLE IF NOT EXISTS poll_slots (
-	id               INTEGER PRIMARY KEY AUTOINCREMENT,
-	poll_id          INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
-	date             TEXT NOT NULL,
-	time             TEXT NOT NULL,
-	duration_minutes INTEGER NOT NULL,
-	location         TEXT NOT NULL,
-	court            TEXT NOT NULL DEFAULT '',
-	price            REAL NOT NULL DEFAULT 0,
-	currency         TEXT NOT NULL DEFAULT 'EUR'
-);
-CREATE INDEX IF NOT EXISTS idx_poll_slots_poll ON poll_slots(poll_id);
-
-CREATE TABLE IF NOT EXISTS votes (
-	poll_slot_id INTEGER NOT NULL REFERENCES poll_slots(id) ON DELETE CASCADE,
-	user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	vote         INTEGER NOT NULL, -- 1 = yes, 0 = no
-	updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-	PRIMARY KEY (poll_slot_id, user_id)
-);
-
--- Sync engine delta log: every mutation appends a row in the same transaction;
--- the autoincrement id is the global logical clock clients resume from.
-CREATE TABLE IF NOT EXISTS sync_log (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	entity     TEXT NOT NULL, -- 'poll' | 'vote' | 'user' | 'settings' | 'slots'
-	entity_id  TEXT NOT NULL,
-	action     TEXT NOT NULL, -- 'upsert' | 'delete'
-	payload    TEXT,          -- JSON; NULL for deletes
-	visible_to INTEGER,       -- user id; NULL = visible to everyone
-	created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-`
-
 // Store exposes GORM and database/sql views of the same connection pool.
 // The SQL handle is temporary compatibility scaffolding while callers are
 // migrated to GORM feature by feature.
@@ -142,9 +41,14 @@ func Open(path string) (*Store, error) {
 	// modernc/sqlite works best with a single writer connection.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	// The migration version is stored in meta, so this one table must exist
+	// before the versioned runner can inspect the database.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
+		return nil, fmt.Errorf("bootstrap migration metadata: %w", err)
 	}
 	if err := applySchemaMigrations(db, schemaMigrations); err != nil {
 		_ = db.Close()
