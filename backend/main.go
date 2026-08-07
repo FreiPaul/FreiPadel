@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -259,49 +260,31 @@ func (a *App) runScrape() {
 		return
 	}
 
-	tx, err := a.db.Begin()
-	if err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`DELETE FROM slots`); err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	stmt, err := tx.Prepare(`INSERT INTO slots (source, location, court, date, time, duration_minutes, price, currency)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	defer stmt.Close()
 	keySet := map[string]bool{}
 	keys := []string{}
+	records := make([]store.SlotRecord, 0, len(slots))
 	for _, s := range slots {
 		if strings.Contains(strings.ToLower(s.Court), "single") {
 			continue
 		}
-		if _, err := stmt.Exec(s.Source, s.Location, s.Court, s.Date, s.Time, s.DurationMinutes, s.Price, s.Currency); err != nil {
-			log.Printf("scrape store: %v", err)
-			return
-		}
+		records = append(records, store.SlotRecord{
+			Source: s.Source, Location: s.Location, Court: s.Court, Date: s.Date, Time: s.Time,
+			DurationMinutes: s.DurationMinutes, Price: s.Price, Currency: s.Currency,
+		})
 		if k := slotKey(s.Date, s.Time, s.DurationMinutes, s.Location); !keySet[k] {
 			keySet[k] = true
 			keys = append(keys, k)
 		}
 	}
 	fetchedAt := time.Now().In(a.tz).Format(time.RFC3339)
-	// One delta for the whole snapshot — clients derive poll-slot availability
-	// from the keys and refetch their filtered slot list.
-	if err := appendSync(tx, "slots", "snapshot", "upsert", map[string]any{
-		"keys": keys, "last_fetched_at": fetchedAt,
-	}, 0); err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
+	err = a.orm.Transaction(func(tx *gorm.DB) error {
+		if err := store.ReplaceSlots(tx, records); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]any{"keys": keys, "last_fetched_at": fetchedAt})
+		return store.AppendSync(tx, "slots", "snapshot", "upsert", payload, 0)
+	})
+	if err != nil {
 		log.Printf("scrape store: %v", err)
 		return
 	}

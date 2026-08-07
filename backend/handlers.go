@@ -190,24 +190,14 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 	maxDate := now.AddDate(0, 0, s.DaysAhead-1).Format("2006-01-02")
 	nowTime := now.Format("15:04")
 
-	rows, err := a.db.Query(`
-		SELECT date, time, duration_minutes, location, source, currency,
-		       MIN(price) AS min_price,
-		       GROUP_CONCAT(court, '|') AS courts
-		FROM slots
-		WHERE date >= ? AND date <= ?
-		  AND time >= ? AND time <= ?
-		  AND duration_minutes >= ?
-		  AND court NOT LIKE '%single%'
-		  AND NOT (date = ? AND time <= ?) -- hide slots already in the past today
-		GROUP BY date, time, duration_minutes, location, source, currency
-		ORDER BY date, time, location, duration_minutes`,
-		minDate, maxDate, s.TimeStart, s.TimeEnd, s.MinDuration, minDate, nowTime)
+	records, err := store.ListSlotGroups(a.orm.WithContext(r.Context()), store.SlotFilter{
+		MinDate: minDate, MaxDate: maxDate, TimeStart: s.TimeStart, TimeEnd: s.TimeEnd,
+		MinDuration: s.MinDuration, NowTime: nowTime,
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	defer rows.Close()
 
 	wanted := map[int]bool{}
 	for _, d := range s.Weekdays {
@@ -219,11 +209,10 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 	}
 
 	groups := []SlotGroup{}
-	for rows.Next() {
-		var g SlotGroup
-		var courts string
-		if err := rows.Scan(&g.Date, &g.Time, &g.DurationMinutes, &g.Location, &g.Source, &g.Currency, &g.MinPrice, &courts); err != nil {
-			continue
+	for _, record := range records {
+		g := SlotGroup{
+			Date: record.Date, Time: record.Time, DurationMinutes: record.DurationMinutes,
+			Location: record.Location, Source: record.Source, Currency: record.Currency, MinPrice: record.MinPrice,
 		}
 		d, err := time.ParseInLocation("2006-01-02", g.Date, a.tz)
 		if err != nil {
@@ -236,7 +225,7 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 		if len(wantedLoc) > 0 && !wantedLoc[g.Location] {
 			continue
 		}
-		g.Courts = splitCourts(courts)
+		g.Courts = splitCourts(record.Courts)
 		groups = append(groups, g)
 	}
 
@@ -270,18 +259,10 @@ func splitCourts(s string) []string {
 // GET /api/locations — all locations currently present in the slot cache,
 // for the location filter UI.
 func (a *App) handleListLocations(w http.ResponseWriter, r *http.Request, u *User) {
-	rows, err := a.db.Query(`SELECT DISTINCT location FROM slots ORDER BY location`)
+	locations, err := store.ListLocations(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
-	}
-	defer rows.Close()
-	locations := []string{}
-	for rows.Next() {
-		var l string
-		if err := rows.Scan(&l); err == nil {
-			locations = append(locations, l)
-		}
 	}
 	writeJSON(w, http.StatusOK, locations)
 }
