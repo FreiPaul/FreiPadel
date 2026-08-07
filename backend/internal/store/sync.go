@@ -1,6 +1,10 @@
 package store
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type SyncLogRecord struct {
 	ID        int64
@@ -12,31 +16,51 @@ type SyncLogRecord struct {
 }
 
 func MaxSyncID(db *gorm.DB) (int64, error) {
-	var id int64
-	err := db.Model(&syncLogModel{}).Select("COALESCE(MAX(id), 0)").Scan(&id).Error
-	return id, err
+	model, err := gorm.G[syncLogModel](db).Order("id DESC").First(db.Statement.Context)
+	if IsNotFound(err) {
+		return 0, nil
+	}
+	return model.ID, err
 }
 
 func ReadSyncLog(db *gorm.DB, since int64, userID int64, isAdmin bool, filterVisibility bool) ([]SyncLogRecord, error) {
-	query := `SELECT id, entity, entity_id, action, COALESCE(payload, '') AS payload,
-		COALESCE(visible_to, 0) AS visible_to FROM sync_log WHERE id > ?`
-	args := []any{since}
+	query := gorm.G[syncLogModel](db).Where("id > ?", since)
 	if filterVisibility {
-		query += ` AND (visible_to IS NULL OR visible_to = ? OR (visible_to = -1 AND ?))`
-		args = append(args, userID, isAdmin)
+		query = query.Where("visible_to IS NULL OR visible_to = ? OR (visible_to = ? AND ?)", userID, -1, isAdmin)
 	}
-	query += ` ORDER BY id`
-	var records []SyncLogRecord
-	err := db.Raw(query, args...).Scan(&records).Error
-	return records, err
+	models, err := query.Order("id").Find(db.Statement.Context)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]SyncLogRecord, len(models))
+	for i, model := range models {
+		records[i] = syncLogRecord(model)
+	}
+	return records, nil
 }
 
 func MaxExpiredSyncID(db *gorm.DB) (int64, error) {
-	var id int64
-	err := db.Model(&syncLogModel{}).
-		Where("created_at < datetime('now', '-7 days')").
-		Select("COALESCE(MAX(id), 0)").Scan(&id).Error
-	return id, err
+	model, err := gorm.G[syncLogModel](db).
+		Where("created_at < ?", sqliteTime(time.Now().UTC().Add(-7*24*time.Hour))).
+		Order("id DESC").
+		First(db.Statement.Context)
+	if IsNotFound(err) {
+		return 0, nil
+	}
+	return model.ID, err
+}
+
+func syncLogRecord(model syncLogModel) SyncLogRecord {
+	record := SyncLogRecord{
+		ID: model.ID, Entity: model.Entity, EntityID: model.EntityID, Action: model.Action,
+	}
+	if model.Payload != nil {
+		record.Payload = *model.Payload
+	}
+	if model.VisibleTo != nil {
+		record.VisibleTo = *model.VisibleTo
+	}
+	return record
 }
 
 func DeleteSyncThrough(db *gorm.DB, id int64) error {

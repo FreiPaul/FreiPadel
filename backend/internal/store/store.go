@@ -54,7 +54,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 
-	if err := migrateHashSessions(db); err != nil {
+	if err := migrateHashSessions(orm); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("hash existing sessions: %w", err)
 	}
@@ -67,45 +67,23 @@ func Open(path string) (*Store, error) {
 // lookup. Guarded by a meta flag because a hashed token is indistinguishable
 // from a raw one by length/format, so re-running would double-hash and log
 // everyone out.
-func migrateHashSessions(db *sql.DB) error {
-	if getMeta(db, "sessions_hashed") == "1" {
+func migrateHashSessions(db *gorm.DB) error {
+	var meta metaModel
+	if err := db.Where(&metaModel{Key: "sessions_hashed"}).First(&meta).Error; err == nil && meta.Value == "1" {
 		return nil
-	}
-	rows, err := db.Query(`SELECT token FROM sessions`)
-	if err != nil {
+	} else if err != nil && !IsNotFound(err) {
 		return err
 	}
-	var tokens []string
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
-			rows.Close()
-			return err
-		}
-		tokens = append(tokens, t)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	var sessions []sessionModel
+	if err := db.Find(&sessions).Error; err != nil {
 		return err
 	}
-	rows.Close()
-
-	for _, t := range tokens {
-		if _, err := db.Exec(`UPDATE sessions SET token = ? WHERE token = ?`, sessiontoken.Hash(t), t); err != nil {
+	for _, session := range sessions {
+		hashed := sessiontoken.Hash(session.Token)
+		if err := db.Model(&session).Update("Token", hashed).Error; err != nil {
 			return err
 		}
 	}
-	return setMeta(db, "sessions_hashed", "1")
-}
-
-func getMeta(db *sql.DB, key string) string {
-	var v string
-	_ = db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
-	return v
-}
-
-func setMeta(db *sql.DB, key, value string) error {
-	_, err := db.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-	return err
+	meta = metaModel{Key: "sessions_hashed", Value: "1"}
+	return db.Save(&meta).Error
 }

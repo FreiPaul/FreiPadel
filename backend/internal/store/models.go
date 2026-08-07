@@ -16,23 +16,25 @@ type userModel struct {
 func (userModel) TableName() string { return "users" }
 
 type sessionModel struct {
-	Token     string `gorm:"column:token;primaryKey"`
-	UserID    int64  `gorm:"column:user_id;not null"`
-	ExpiresAt string `gorm:"column:expires_at;not null"`
+	Token     string    `gorm:"column:token;primaryKey"`
+	UserID    int64     `gorm:"column:user_id;not null"`
+	ExpiresAt string    `gorm:"column:expires_at;not null"`
+	User      userModel `gorm:"foreignKey:UserID;references:ID"`
 }
 
 func (sessionModel) TableName() string { return "sessions" }
 
 type inviteModel struct {
-	Token     string  `gorm:"column:token;primaryKey"`
-	CreatedBy int64   `gorm:"column:created_by;not null"`
-	CreatedAt string  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
-	UsedBy    *int64  `gorm:"column:used_by"`
-	UsedAt    *string `gorm:"column:used_at"`
-	Email     *string `gorm:"column:email"`
-	Kind      string  `gorm:"column:kind;not null;default:single"`
-	Disabled  bool    `gorm:"column:disabled;not null;default:false"`
-	Uses      int     `gorm:"column:uses;not null;default:0"`
+	Token      string     `gorm:"column:token;primaryKey"`
+	CreatedBy  int64      `gorm:"column:created_by;not null"`
+	CreatedAt  string     `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
+	UsedBy     *int64     `gorm:"column:used_by"`
+	UsedAt     *string    `gorm:"column:used_at"`
+	Email      *string    `gorm:"column:email"`
+	Kind       string     `gorm:"column:kind;not null;default:single"`
+	Disabled   bool       `gorm:"column:disabled;not null;default:false"`
+	Uses       int        `gorm:"column:uses;not null;default:0"`
+	UsedByUser *userModel `gorm:"foreignKey:UsedBy;references:ID"`
 }
 
 func (inviteModel) TableName() string { return "invites" }
@@ -72,36 +74,39 @@ type metaModel struct {
 func (metaModel) TableName() string { return "meta" }
 
 type pollModel struct {
-	ID            int64   `gorm:"column:id;primaryKey;autoIncrement"`
-	CreatorID     int64   `gorm:"column:creator_id;not null"`
-	Title         string  `gorm:"column:title;not null"`
-	Status        string  `gorm:"column:status;not null;default:active"`
-	WinningSlotID *int64  `gorm:"column:winning_slot_id"`
-	CreatedAt     string  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
-	ClosedAt      *string `gorm:"column:closed_at"`
+	ID            int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	CreatorID     int64     `gorm:"column:creator_id;not null"`
+	Title         string    `gorm:"column:title;not null"`
+	Status        string    `gorm:"column:status;not null;default:active"`
+	WinningSlotID *int64    `gorm:"column:winning_slot_id"`
+	CreatedAt     string    `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
+	ClosedAt      *string   `gorm:"column:closed_at"`
+	Creator       userModel `gorm:"foreignKey:CreatorID;references:ID"`
 }
 
 func (pollModel) TableName() string { return "polls" }
 
 type pollSlotModel struct {
-	ID              int64   `gorm:"column:id;primaryKey;autoIncrement"`
-	PollID          int64   `gorm:"column:poll_id;not null;index:idx_poll_slots_poll"`
-	Date            string  `gorm:"column:date;not null"`
-	Time            string  `gorm:"column:time;not null"`
-	DurationMinutes int     `gorm:"column:duration_minutes;not null"`
-	Location        string  `gorm:"column:location;not null"`
-	Court           string  `gorm:"column:court;not null;default:''"`
-	Price           float64 `gorm:"column:price;not null;default:0"`
-	Currency        string  `gorm:"column:currency;not null;default:EUR"`
+	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	PollID          int64     `gorm:"column:poll_id;not null;index:idx_poll_slots_poll"`
+	Date            string    `gorm:"column:date;not null"`
+	Time            string    `gorm:"column:time;not null"`
+	DurationMinutes int       `gorm:"column:duration_minutes;not null"`
+	Location        string    `gorm:"column:location;not null"`
+	Court           string    `gorm:"column:court;not null;default:''"`
+	Price           float64   `gorm:"column:price;not null;default:0"`
+	Currency        string    `gorm:"column:currency;not null;default:EUR"`
+	Poll            pollModel `gorm:"foreignKey:PollID;references:ID"`
 }
 
 func (pollSlotModel) TableName() string { return "poll_slots" }
 
 type voteModel struct {
-	PollSlotID int64  `gorm:"column:poll_slot_id;primaryKey"`
-	UserID     int64  `gorm:"column:user_id;primaryKey"`
-	Vote       bool   `gorm:"column:vote;not null"`
-	UpdatedAt  string `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	PollSlotID int64     `gorm:"column:poll_slot_id;primaryKey"`
+	UserID     int64     `gorm:"column:user_id;primaryKey"`
+	Vote       bool      `gorm:"column:vote;not null"`
+	UpdatedAt  string    `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	User       userModel `gorm:"foreignKey:UserID;references:ID"`
 }
 
 func (voteModel) TableName() string { return "votes" }

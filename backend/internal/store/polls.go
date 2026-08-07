@@ -1,6 +1,9 @@
 package store
 
 import (
+	"sort"
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -36,23 +39,33 @@ type VoteRecord struct {
 }
 
 func ListPolls(db *gorm.DB) ([]PollRecord, error) {
-	var polls []PollRecord
-	err := db.Table("polls AS p").
-		Select(`p.id, p.title, p.creator_id, u.name AS creator_name, p.status,
-			p.winning_slot_id, p.created_at, p.closed_at`).
-		Joins("JOIN users AS u ON u.id = p.creator_id").
-		Order("p.status = 'active' DESC, p.created_at DESC").Scan(&polls).Error
-	return polls, err
+	models, err := gorm.G[pollModel](db).
+		Preload("Creator", nil).
+		Order("created_at DESC").
+		Find(db.Statement.Context)
+	if err != nil {
+		return nil, err
+	}
+	// Keep active polls first without encoding application status rules in SQL.
+	sort.SliceStable(models, func(i, j int) bool {
+		return models[i].Status == "active" && models[j].Status != "active"
+	})
+	polls := make([]PollRecord, len(models))
+	for i, model := range models {
+		polls[i] = pollRecord(model)
+	}
+	return polls, nil
 }
 
 func FindPoll(db *gorm.DB, id int64) (PollRecord, error) {
-	var poll PollRecord
-	err := db.Table("polls AS p").
-		Select(`p.id, p.title, p.creator_id, u.name AS creator_name, p.status,
-			p.winning_slot_id, p.created_at, p.closed_at`).
-		Joins("JOIN users AS u ON u.id = p.creator_id").
-		Where("p.id = ?", id).Take(&poll).Error
-	return poll, err
+	model, err := gorm.G[pollModel](db).
+		Preload("Creator", nil).
+		Where("id = ?", id).
+		First(db.Statement.Context)
+	if err != nil {
+		return PollRecord{}, err
+	}
+	return pollRecord(model), nil
 }
 
 func ListPollSlots(db *gorm.DB, pollID *int64) ([]PollSlotRecord, error) {
@@ -72,11 +85,21 @@ func ListPollSlots(db *gorm.DB, pollID *int64) ([]PollSlotRecord, error) {
 }
 
 func ListVotes(db *gorm.DB) ([]VoteRecord, error) {
-	var votes []VoteRecord
-	err := db.Table("votes AS v").
-		Select("v.poll_slot_id, v.user_id, u.name, v.vote").
-		Joins("JOIN users AS u ON u.id = v.user_id").Order("u.name").Scan(&votes).Error
-	return votes, err
+	models, err := gorm.G[voteModel](db).
+		Preload("User", nil).
+		Find(db.Statement.Context)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].User.Name < models[j].User.Name })
+	votes := make([]VoteRecord, len(models))
+	for i, model := range models {
+		votes[i] = VoteRecord{
+			PollSlotID: model.PollSlotID, UserID: model.UserID,
+			Name: model.User.Name, Vote: model.Vote,
+		}
+	}
+	return votes, nil
 }
 
 func CreatePoll(db *gorm.DB, creatorID int64, title string, slots []PollSlotRecord) (int64, error) {
@@ -101,13 +124,11 @@ func CreatePoll(db *gorm.DB, creatorID int64, title string, slots []PollSlotReco
 }
 
 func FindPollForSlot(db *gorm.DB, slotID int64) (int64, string, error) {
-	var result struct {
-		PollID int64
-		Status string
-	}
-	err := db.Table("poll_slots AS ps").Select("ps.poll_id, p.status").
-		Joins("JOIN polls AS p ON p.id = ps.poll_id").Where("ps.id = ?", slotID).Take(&result).Error
-	return result.PollID, result.Status, err
+	model, err := gorm.G[pollSlotModel](db).
+		Preload("Poll", nil).
+		Where("id = ?", slotID).
+		First(db.Statement.Context)
+	return model.PollID, model.Poll.Status, err
 }
 
 func DeleteVote(db *gorm.DB, pollSlotID, userID int64) error {
@@ -115,12 +136,13 @@ func DeleteVote(db *gorm.DB, pollSlotID, userID int64) error {
 }
 
 func UpsertVote(db *gorm.DB, pollSlotID, userID int64, vote bool) error {
-	model := voteModel{PollSlotID: pollSlotID, UserID: userID, Vote: vote}
+	model := voteModel{
+		PollSlotID: pollSlotID, UserID: userID, Vote: vote,
+		UpdatedAt: sqliteTime(time.Now().UTC()),
+	}
 	return db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "poll_slot_id"}, {Name: "user_id"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"vote": vote, "updated_at": gorm.Expr("datetime('now')"),
-		}),
+		Columns:   []clause.Column{{Name: "poll_slot_id"}, {Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"vote", "updated_at"}),
 	}).Create(&model).Error
 }
 
@@ -131,9 +153,15 @@ func PollSlotBelongsTo(db *gorm.DB, slotID, pollID int64) (bool, error) {
 }
 
 func ClosePoll(db *gorm.DB, pollID int64, winningSlotID *int64) error {
-	return db.Model(&pollModel{}).Where("id = ?", pollID).Updates(map[string]any{
-		"status": "closed", "winning_slot_id": winningSlotID, "closed_at": gorm.Expr("datetime('now')"),
-	}).Error
+	model, err := gorm.G[pollModel](db).Where("id = ?", pollID).First(db.Statement.Context)
+	if err != nil {
+		return err
+	}
+	now := sqliteTime(time.Now().UTC())
+	model.Status = "closed"
+	model.WinningSlotID = winningSlotID
+	model.ClosedAt = &now
+	return db.Model(&model).Select("Status", "WinningSlotID", "ClosedAt").Updates(&model).Error
 }
 
 func DeletePoll(db *gorm.DB, pollID int64) error {
@@ -145,5 +173,13 @@ func pollSlotRecord(model pollSlotModel) PollSlotRecord {
 		ID: model.ID, PollID: model.PollID, Date: model.Date, Time: model.Time,
 		DurationMinutes: model.DurationMinutes, Location: model.Location,
 		Court: model.Court, Price: model.Price, Currency: model.Currency,
+	}
+}
+
+func pollRecord(model pollModel) PollRecord {
+	return PollRecord{
+		ID: model.ID, Title: model.Title, CreatorID: model.CreatorID,
+		CreatorName: model.Creator.Name, Status: model.Status,
+		WinningSlotID: model.WinningSlotID, CreatedAt: model.CreatedAt, ClosedAt: model.ClosedAt,
 	}
 }

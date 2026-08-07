@@ -100,6 +100,13 @@ func TestInvitePersistence(t *testing.T) {
 	if invite.Uses != 1 || invite.UsedByID == nil || *invite.UsedByID != friend.ID || invite.UsedByName == nil {
 		t.Errorf("redeemed invite = %#v", invite)
 	}
+	invites, err := ListInvites(storage.ORM)
+	if err != nil {
+		t.Fatalf("list invites: %v", err)
+	}
+	if len(invites) != 1 || invites[0].UsedByName == nil || *invites[0].UsedByName != friend.Name {
+		t.Errorf("listed invites = %#v", invites)
+	}
 	if affected, err := DeleteInvite(storage.ORM, invite.Token); err != nil || affected != 0 {
 		t.Errorf("delete used invite affected = %d, error = %v; want 0", affected, err)
 	}

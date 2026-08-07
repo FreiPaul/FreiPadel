@@ -36,6 +36,18 @@ func scalarInt(t *testing.T, db *sql.DB, query string, args ...any) int {
 	return got
 }
 
+func getMeta(db *sql.DB, key string) string {
+	var value string
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&value)
+	return value
+}
+
+func setMeta(db *sql.DB, key, value string) error {
+	_, err := db.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
 func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
 	db := openTestDB(t)
 

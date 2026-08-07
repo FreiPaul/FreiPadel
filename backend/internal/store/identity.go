@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -46,26 +47,27 @@ func CountUsers(db *gorm.DB) (int64, error) {
 }
 
 func FindUserBySession(db *gorm.DB, tokenHash string) (UserRecord, error) {
-	var user UserRecord
-	err := db.Table("sessions AS s").
-		Select("u.id, u.email, u.name, u.is_admin").
-		Joins("JOIN users AS u ON u.id = s.user_id").
-		Where("s.token = ? AND s.expires_at > datetime('now')", tokenHash).
-		Take(&user).Error
-	return user, err
+	session, err := gorm.G[sessionModel](db).
+		Preload("User", nil).
+		Where("token = ? AND expires_at > ?", tokenHash, sqliteTime(time.Now().UTC())).
+		First(db.Statement.Context)
+	if err != nil {
+		return UserRecord{}, err
+	}
+	return userRecord(session.User), nil
 }
 
 func FindUserByEmail(db *gorm.DB, email string) (UserRecord, error) {
-	var model userModel
-	if err := db.Where("email = ?", email).Take(&model).Error; err != nil {
+	model, err := gorm.G[userModel](db).Where("email = ?", email).First(db.Statement.Context)
+	if err != nil {
 		return UserRecord{}, err
 	}
 	return userRecord(model), nil
 }
 
 func ListUsers(db *gorm.DB) ([]UserRecord, error) {
-	var models []userModel
-	if err := db.Order("id").Find(&models).Error; err != nil {
+	models, err := gorm.G[userModel](db).Order("id").Find(db.Statement.Context)
+	if err != nil {
 		return nil, err
 	}
 	users := make([]UserRecord, len(models))
@@ -76,8 +78,8 @@ func ListUsers(db *gorm.DB) ([]UserRecord, error) {
 }
 
 func ListMembers(db *gorm.DB) ([]UserRecord, error) {
-	var models []userModel
-	if err := db.Select("id", "name", "is_admin").Order("name").Find(&models).Error; err != nil {
+	models, err := gorm.G[userModel](db).Order("name").Find(db.Statement.Context)
+	if err != nil {
 		return nil, err
 	}
 	members := make([]UserRecord, len(models))
@@ -114,39 +116,59 @@ func DeleteSession(db *gorm.DB, tokenHash string) error {
 }
 
 func DeleteSessionsForUserEmail(db *gorm.DB, email string) error {
-	subquery := db.Model(&userModel{}).Select("id").Where("email = ?", email)
-	return db.Where("user_id = (?)", subquery).Delete(&sessionModel{}).Error
+	user, err := gorm.G[userModel](db).Where("email = ?", email).First(db.Statement.Context)
+	if IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return db.Where(&sessionModel{UserID: user.ID}).Delete(&sessionModel{}).Error
 }
 
 func DeleteExpiredSessions(db *gorm.DB) error {
-	return db.Where("expires_at <= datetime('now')").Delete(&sessionModel{}).Error
+	return db.Where("expires_at <= ?", sqliteTime(time.Now().UTC())).Delete(&sessionModel{}).Error
 }
 
 func FindInvite(db *gorm.DB, token string) (InviteRecord, error) {
-	var invite InviteRecord
-	err := db.Table("invites AS i").
-		Select(`i.token, i.kind, i.email, i.created_at, i.used_by AS used_by_id,
-			u.name AS used_by_name, i.used_at, i.disabled, i.uses`).
-		Joins("LEFT JOIN users AS u ON u.id = i.used_by").
-		Where("i.token = ?", token).Take(&invite).Error
-	return invite, err
+	model, err := gorm.G[inviteModel](db).
+		Preload("UsedByUser", nil).
+		Where("token = ?", token).
+		First(db.Statement.Context)
+	if err != nil {
+		return InviteRecord{}, err
+	}
+	return inviteRecord(model), nil
 }
 
 func ListInvites(db *gorm.DB) ([]InviteRecord, error) {
-	var invites []InviteRecord
-	err := db.Table("invites AS i").
-		Select(`i.token, i.kind, i.email, i.created_at, i.used_by AS used_by_id,
-			u.name AS used_by_name, i.used_at, i.disabled, i.uses`).
-		Joins("LEFT JOIN users AS u ON u.id = i.used_by").
-		Order("i.created_at DESC").Scan(&invites).Error
-	return invites, err
+	models, err := gorm.G[inviteModel](db).
+		Preload("UsedByUser", nil).
+		Order("created_at DESC").
+		Find(db.Statement.Context)
+	if err != nil {
+		return nil, err
+	}
+	invites := make([]InviteRecord, len(models))
+	for i, model := range models {
+		invites[i] = inviteRecord(model)
+	}
+	return invites, nil
 }
 
 func UserOrInviteEmailExists(db *gorm.DB, email string) (bool, error) {
-	var exists bool
-	err := db.Raw(`SELECT (EXISTS(SELECT 1 FROM users WHERE email = ?)
-		OR EXISTS(SELECT 1 FROM invites WHERE email = ?))`, email, email).Scan(&exists).Error
-	return exists, err
+	var userCount int64
+	if err := db.Model(&userModel{}).Where(&userModel{Email: email}).Count(&userCount).Error; err != nil {
+		return false, err
+	}
+	if userCount != 0 {
+		return true, nil
+	}
+	var inviteCount int64
+	if err := db.Model(&inviteModel{}).Where(&inviteModel{Email: &email}).Count(&inviteCount).Error; err != nil {
+		return false, err
+	}
+	return inviteCount != 0, nil
 }
 
 func CreateInvite(db *gorm.DB, token string, createdBy int64, kind string, email *string) error {
@@ -164,11 +186,19 @@ func DeleteInvite(db *gorm.DB, token string) (int64, error) {
 }
 
 func RedeemInvite(db *gorm.DB, token string, userID int64) error {
-	return db.Model(&inviteModel{}).Where("token = ?", token).Updates(map[string]any{
-		"uses":    gorm.Expr("uses + 1"),
-		"used_by": gorm.Expr("CASE WHEN kind = 'group' THEN used_by ELSE ? END", userID),
-		"used_at": gorm.Expr("CASE WHEN kind = 'group' THEN used_at ELSE datetime('now') END"),
-	}).Error
+	model, err := gorm.G[inviteModel](db).Where("token = ?", token).First(db.Statement.Context)
+	if err != nil {
+		return err
+	}
+	model.Uses++
+	fields := []string{"Uses"}
+	if model.Kind != "group" {
+		now := sqliteTime(time.Now().UTC())
+		model.UsedBy = &userID
+		model.UsedAt = &now
+		fields = append(fields, "UsedBy", "UsedAt")
+	}
+	return db.Model(&model).Select(fields).Updates(&model).Error
 }
 
 func CreateDefaultSettings(db *gorm.DB, userID int64) error {
@@ -176,8 +206,8 @@ func CreateDefaultSettings(db *gorm.DB, userID int64) error {
 }
 
 func FindSettings(db *gorm.DB, userID int64) (SettingsRecord, error) {
-	var model userSettingsModel
-	if err := db.Where("user_id = ?", userID).Take(&model).Error; err != nil {
+	model, err := gorm.G[userSettingsModel](db).Where("user_id = ?", userID).First(db.Statement.Context)
+	if err != nil {
 		return SettingsRecord{}, err
 	}
 	return settingsRecord(model), nil
@@ -214,5 +244,20 @@ func settingsRecord(model userSettingsModel) SettingsRecord {
 		Locations: model.Locations, Notifications: model.Notifications,
 	}
 }
+
+func inviteRecord(model inviteModel) InviteRecord {
+	var usedByName *string
+	if model.UsedByUser != nil {
+		name := model.UsedByUser.Name
+		usedByName = &name
+	}
+	return InviteRecord{
+		Token: model.Token, Kind: model.Kind, Email: model.Email, CreatedAt: model.CreatedAt,
+		UsedByID: model.UsedBy, UsedByName: usedByName, UsedAt: model.UsedAt,
+		Disabled: model.Disabled, Uses: model.Uses,
+	}
+}
+
+func sqliteTime(value time.Time) string { return value.Format("2006-01-02 15:04:05") }
 
 func IsNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }
