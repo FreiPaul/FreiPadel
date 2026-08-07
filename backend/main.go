@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -26,7 +25,6 @@ var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 type App struct {
 	store         *store.Store
-	db            *sql.DB
 	orm           *gorm.DB
 	scrapeCfg     scraper.Config
 	scraper       *scraper.Scraper
@@ -69,8 +67,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	db := storage.SQL
-
 	scrapeCfg, err := scraper.LoadConfig(filepath.Join(dataDir, "config.json"))
 	if err != nil {
 		log.Fatalf("load scraper config: %v", err)
@@ -96,7 +92,6 @@ func main() {
 
 	app := &App{
 		store:          storage,
-		db:             db,
 		orm:            storage.ORM,
 		scrapeCfg:      scrapeCfg,
 		scraper:        scr,

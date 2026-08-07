@@ -45,7 +45,7 @@ func TestReplaceAndQuerySlots(t *testing.T) {
 	if err := ReplaceSlots(storage.ORM, replacement); err != nil {
 		t.Fatalf("replace slots again: %v", err)
 	}
-	if got := scalarInt(t, storage.SQL, `SELECT COUNT(*) FROM slots`); got != 1 {
+	if got := scalarInt(t, storage.sql, `SELECT COUNT(*) FROM slots`); got != 1 {
 		t.Errorf("slot count after replacement = %d, want 1", got)
 	}
 }

@@ -18,7 +18,7 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	db := database.SQL
+	db := database.sql
 	t.Cleanup(func() {
 		if err := database.Close(); err != nil {
 			t.Errorf("close database: %v", err)
@@ -122,7 +122,7 @@ func TestOpenDBGORMAndSQLShareConnectionPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get GORM connection pool: %v", err)
 	}
-	if sqlDB != database.SQL {
+	if sqlDB != database.sql {
 		t.Fatal("GORM and compatibility SQL handles use different connection pools")
 	}
 
@@ -133,7 +133,7 @@ func TestOpenDBGORMAndSQLShareConnectionPool(t *testing.T) {
 	if user.ID == 0 {
 		t.Error("GORM did not populate the generated user ID")
 	}
-	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM users WHERE id = ? AND email = ?`,
+	if got := scalarInt(t, database.sql, `SELECT COUNT(*) FROM users WHERE id = ? AND email = ?`,
 		user.ID, user.Email); got != 1 {
 		t.Errorf("user count through SQL handle = %d, want 1", got)
 	}
@@ -172,10 +172,10 @@ func TestGORMMetadataAndSyncWrites(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("rollback transaction error = %v, want %v", err, wantErr)
 	}
-	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM users WHERE email = 'rollback@example.com'`); got != 0 {
+	if got := scalarInt(t, database.sql, `SELECT COUNT(*) FROM users WHERE email = 'rollback@example.com'`); got != 0 {
 		t.Errorf("rolled-back user count = %d, want 0", got)
 	}
-	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'rollback'`); got != 0 {
+	if got := scalarInt(t, database.sql, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'rollback'`); got != 0 {
 		t.Errorf("rolled-back sync count = %d, want 0", got)
 	}
 
@@ -190,7 +190,7 @@ func TestGORMMetadataAndSyncWrites(t *testing.T) {
 	}
 	var payload sql.NullString
 	var visible sql.NullInt64
-	if err := database.SQL.QueryRow(`SELECT payload, visible_to FROM sync_log WHERE entity_id = 'commit'`).
+	if err := database.sql.QueryRow(`SELECT payload, visible_to FROM sync_log WHERE entity_id = 'commit'`).
 		Scan(&payload, &visible); err != nil {
 		t.Fatalf("read committed sync event: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate legacy database: %v", err)
 	}
-	db := database.SQL
+	db := database.sql
 
 	var locations, notifications string
 	if err := db.QueryRow(`SELECT locations, notifications FROM user_settings WHERE user_id = 1`).
@@ -297,7 +297,7 @@ func TestOpenDBMigratesLegacyDatabaseOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen migrated database: %v", err)
 	}
-	db = database.SQL
+	db = database.sql
 	t.Cleanup(func() { _ = database.Close() })
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM sessions WHERE token = ?`, hashed); got != 1 {
 		t.Errorf("hashed session count after reopen = %d, want 1", got)
@@ -349,7 +349,7 @@ func TestOpenDBRejectsNewerSchemaVersion(t *testing.T) {
 		t.Fatalf("open database: %v", err)
 	}
 	newerVersion := latestSchemaVersion + 1
-	if err := setMeta(database.SQL, schemaVersionKey, strconv.Itoa(newerVersion)); err != nil {
+	if err := setMeta(database.sql, schemaVersionKey, strconv.Itoa(newerVersion)); err != nil {
 		database.Close()
 		t.Fatalf("set newer schema version: %v", err)
 	}

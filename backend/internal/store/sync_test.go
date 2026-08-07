@@ -46,7 +46,7 @@ func TestSyncLogVisibilityAndReplay(t *testing.T) {
 	if err := DeleteSyncThrough(storage.ORM, 2); err != nil {
 		t.Fatalf("delete sync prefix: %v", err)
 	}
-	if got := scalarInt(t, storage.SQL, `SELECT COUNT(*) FROM sync_log`); got != 2 {
+	if got := scalarInt(t, storage.sql, `SELECT COUNT(*) FROM sync_log`); got != 2 {
 		t.Errorf("sync rows after deletion = %d, want 2", got)
 	}
 }

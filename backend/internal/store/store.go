@@ -10,16 +10,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Store exposes GORM and database/sql views of the same connection pool.
-// The SQL handle is temporary compatibility scaffolding while callers are
-// migrated to GORM feature by feature.
+// Store owns the GORM database and its underlying connection pool. The SQL
+// handle remains private for bootstrapping and versioned schema migrations.
 type Store struct {
 	ORM *gorm.DB
-	SQL *sql.DB
+	sql *sql.DB
 }
 
 func (s *Store) Close() error {
-	return s.SQL.Close()
+	return s.sql.Close()
 }
 
 func Open(path string) (*Store, error) {
@@ -59,7 +58,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("hash existing sessions: %w", err)
 	}
-	return &Store{ORM: orm, SQL: db}, nil
+	return &Store{ORM: orm, sql: db}, nil
 }
 
 // migrateHashSessions rewrites plaintext session tokens to their hashes once, so

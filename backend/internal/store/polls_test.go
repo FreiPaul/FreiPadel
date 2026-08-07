@@ -61,7 +61,7 @@ func TestPollAndVotePersistence(t *testing.T) {
 	if err := DeletePoll(storage.ORM, pollID); err != nil {
 		t.Fatalf("delete poll: %v", err)
 	}
-	if got := scalarInt(t, storage.SQL, `SELECT COUNT(*) FROM poll_slots WHERE poll_id = ?`, pollID); got != 0 {
+	if got := scalarInt(t, storage.sql, `SELECT COUNT(*) FROM poll_slots WHERE poll_id = ?`, pollID); got != 0 {
 		t.Errorf("poll slots after deletion = %d, want 0", got)
 	}
 }
