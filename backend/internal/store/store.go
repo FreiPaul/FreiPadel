@@ -110,14 +110,3 @@ func setMeta(db *sql.DB, key, value string) error {
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }
-
-// GetMeta reads an application metadata value. A missing key returns an empty
-// string, matching the behavior of the compatibility layer it replaces.
-func (s *Store) GetMeta(key string) string {
-	return getMeta(s.SQL, key)
-}
-
-// SetMeta inserts or replaces an application metadata value.
-func (s *Store) SetMeta(key, value string) error {
-	return setMeta(s.SQL, key, value)
-}

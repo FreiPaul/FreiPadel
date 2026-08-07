@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"freipadel/internal/sessiontoken"
+	"gorm.io/gorm"
 )
 
 func openTestDB(t *testing.T) *sql.DB {
@@ -135,6 +136,66 @@ func TestOpenDBGORMAndSQLShareConnectionPool(t *testing.T) {
 	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM users WHERE id = ? AND email = ?`,
 		user.ID, user.Email); got != 1 {
 		t.Errorf("user count through SQL handle = %d, want 1", got)
+	}
+}
+
+func TestGORMMetadataAndSyncWrites(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "freipadel.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	if got := database.GetMeta("missing"); got != "" {
+		t.Errorf("missing metadata = %q, want empty", got)
+	}
+	if err := database.SetMeta("test_key", "first"); err != nil {
+		t.Fatalf("insert metadata: %v", err)
+	}
+	if err := database.SetMeta("test_key", "second"); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+	if got := database.GetMeta("test_key"); got != "second" {
+		t.Errorf("updated metadata = %q, want second", got)
+	}
+
+	wantErr := errors.New("roll back")
+	err = database.ORM.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&userModel{Email: "rollback@example.com", Name: "Rollback", PasswordHash: "hash"}).Error; err != nil {
+			return err
+		}
+		if err := AppendSync(tx, "user", "rollback", "upsert", []byte(`{"id":1}`), 7); err != nil {
+			return err
+		}
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("rollback transaction error = %v, want %v", err, wantErr)
+	}
+	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM users WHERE email = 'rollback@example.com'`); got != 0 {
+		t.Errorf("rolled-back user count = %d, want 0", got)
+	}
+	if got := scalarInt(t, database.SQL, `SELECT COUNT(*) FROM sync_log WHERE entity_id = 'rollback'`); got != 0 {
+		t.Errorf("rolled-back sync count = %d, want 0", got)
+	}
+
+	err = database.ORM.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&userModel{Email: "commit@example.com", Name: "Commit", PasswordHash: "hash"}).Error; err != nil {
+			return err
+		}
+		return AppendSync(tx, "user", "commit", "upsert", []byte(`{"id":2}`), 0)
+	})
+	if err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+	var payload sql.NullString
+	var visible sql.NullInt64
+	if err := database.SQL.QueryRow(`SELECT payload, visible_to FROM sync_log WHERE entity_id = 'commit'`).
+		Scan(&payload, &visible); err != nil {
+		t.Fatalf("read committed sync event: %v", err)
+	}
+	if !payload.Valid || payload.String != `{"id":2}` || visible.Valid {
+		t.Errorf("committed sync event = payload %#v, visibility %#v", payload, visible)
 	}
 }
 
