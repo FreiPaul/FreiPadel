@@ -121,7 +121,7 @@ func main() {
 	// Hourly session cleanup + sync log compaction.
 	go func() {
 		for {
-			_, _ = db.Exec(`DELETE FROM sessions WHERE expires_at <= datetime('now')`)
+			_ = store.DeleteExpiredSessions(storage.ORM)
 			app.compactSyncLog()
 			time.Sleep(time.Hour)
 		}

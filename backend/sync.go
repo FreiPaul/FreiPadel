@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"freipadel/internal/store"
 )
 
 // --- Wire shapes (consumed by frontend/src/lib/sync.svelte.ts) ---
@@ -346,9 +348,14 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 	// Invites are admin-only, like their deltas.
 	var invites []Invite
 	if u.IsAdmin {
-		if invites, err = loadInvites(a.db); err != nil {
+		records, loadErr := store.ListInvites(a.orm.WithContext(r.Context()))
+		if loadErr != nil {
 			httpError(w, http.StatusInternalServerError, "database error")
 			return
+		}
+		invites = make([]Invite, len(records))
+		for i, record := range records {
+			invites[i] = inviteFromRecord(record)
 		}
 	}
 
