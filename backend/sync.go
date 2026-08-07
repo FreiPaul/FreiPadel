@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"freipadel/internal/store"
+	"gorm.io/gorm"
 )
 
 // --- Wire shapes (consumed by frontend/src/lib/sync.svelte.ts) ---
@@ -143,6 +144,29 @@ func loadSyncPoll(q queryer, id int64) (*syncPoll, error) {
 		}
 	}
 	return &p, nil
+}
+
+func loadSyncPollGORM(db *gorm.DB, id int64) (*syncPoll, error) {
+	record, err := store.FindPoll(db, id)
+	if err != nil {
+		return nil, err
+	}
+	slots, err := store.ListPollSlots(db, &id)
+	if err != nil {
+		return nil, err
+	}
+	poll := &syncPoll{
+		ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+		Status: record.Status, WinningSlotID: record.WinningSlotID,
+		CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: make([]syncPollSlot, len(slots)),
+	}
+	for i, slot := range slots {
+		poll.Slots[i] = syncPollSlot{
+			ID: slot.ID, Date: slot.Date, Time: slot.Time, DurationMinutes: slot.DurationMinutes,
+			Location: slot.Location, Court: slot.Court, Price: slot.Price, Currency: slot.Currency,
+		}
+	}
+	return poll, nil
 }
 
 // --- Hub: fans persisted (and ephemeral) deltas out to SSE connections ---
