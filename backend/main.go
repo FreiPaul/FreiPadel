@@ -110,7 +110,7 @@ func main() {
 	} else {
 		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS and EMAILER_ENABLED=\"1\")")
 	}
-	app.hub = newSyncHub(db)
+	app.hub = newSyncHub(storage.ORM)
 
 	// Background scrape loop.
 	intervalMin, _ := strconv.Atoi(envOr("SCRAPE_INTERVAL_MINUTES", "30"))
