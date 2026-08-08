@@ -12,6 +12,7 @@ import (
 
 	"freipadel/internal/store"
 	"freipadel/scraper"
+
 	"gorm.io/gorm"
 )
 
@@ -32,8 +33,8 @@ type Settings struct {
 // no schema change or backfill is needed — mergeNotifications fills it in for
 // every user on read.
 var notificationDefaults = map[string]bool{
-	"slot_available": true,
-	"poll_created":   true,
+	"slot_booked":  false,
+	"poll_created": false,
 }
 
 // mergeNotifications overlays a user's stored preferences on top of the

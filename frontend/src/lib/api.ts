@@ -17,6 +17,7 @@ export interface Settings {
 	days_ahead: number;
 	min_duration: number;
 	locations: string[]; // empty = all locations
+	notifications: Record<string, boolean>; // notification key -> enabled
 }
 
 export interface SlotGroup {
