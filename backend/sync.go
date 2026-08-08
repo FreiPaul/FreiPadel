@@ -8,7 +8,6 @@ package main
 // them to re-bootstrap when the log has been compacted past their cursor.
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +15,9 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"freipadel/internal/store"
+	"gorm.io/gorm"
 )
 
 // --- Wire shapes (consumed by frontend/src/lib/sync.svelte.ts) ---
@@ -87,66 +89,33 @@ func (s subscriber) canSee(visibleTo int64) bool {
 	}
 }
 
-type execer interface {
-	Exec(query string, args ...any) (sql.Result, error)
-}
-
-type queryer interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
-}
-
-// appendSync records a delta. Call it inside the transaction that performs the
-// domain write, then hub.notify() after commit. visibleTo 0 = all users.
-func appendSync(e execer, entity, entityID, action string, payload any, visibleTo int64) error {
-	var data any
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		data = string(b)
-	}
-	var vis any
-	if visibleTo != 0 {
-		vis = visibleTo
-	}
-	_, err := e.Exec(`INSERT INTO sync_log (entity, entity_id, action, payload, visible_to)
-		VALUES (?, ?, ?, ?, ?)`, entity, entityID, action, data, vis)
-	return err
-}
-
-// loadSyncPoll loads one poll with its slots, in the shape the client store
-// expects. Works inside a transaction (q = *sql.Tx) or on the pool.
-func loadSyncPoll(q queryer, id int64) (*syncPoll, error) {
-	var p syncPoll
-	err := q.QueryRow(`
-		SELECT p.id, p.title, p.creator_id, usr.name, p.status, p.winning_slot_id, p.created_at, p.closed_at
-		FROM polls p JOIN users usr ON usr.id = p.creator_id WHERE p.id = ?`, id).
-		Scan(&p.ID, &p.Title, &p.CreatorID, &p.CreatorName, &p.Status, &p.WinningSlotID, &p.CreatedAt, &p.ClosedAt)
+func loadSyncPollGORM(db *gorm.DB, id int64) (*syncPoll, error) {
+	record, err := store.FindPoll(db, id)
 	if err != nil {
 		return nil, err
 	}
-	p.Slots = []syncPollSlot{}
-	rows, err := q.Query(`SELECT id, date, time, duration_minutes, location, court, price, currency
-		FROM poll_slots WHERE poll_id = ? ORDER BY date, time, location, duration_minutes`, id)
+	slots, err := store.ListPollSlots(db, &id)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var s syncPollSlot
-		if err := rows.Scan(&s.ID, &s.Date, &s.Time, &s.DurationMinutes, &s.Location, &s.Court, &s.Price, &s.Currency); err == nil {
-			p.Slots = append(p.Slots, s)
+	poll := &syncPoll{
+		ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+		Status: record.Status, WinningSlotID: record.WinningSlotID,
+		CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: make([]syncPollSlot, len(slots)),
+	}
+	for i, slot := range slots {
+		poll.Slots[i] = syncPollSlot{
+			ID: slot.ID, Date: slot.Date, Time: slot.Time, DurationMinutes: slot.DurationMinutes,
+			Location: slot.Location, Court: slot.Court, Price: slot.Price, Currency: slot.Currency,
 		}
 	}
-	return &p, nil
+	return poll, nil
 }
 
 // --- Hub: fans persisted (and ephemeral) deltas out to SSE connections ---
 
 type syncHub struct {
-	db *sql.DB
+	db *gorm.DB
 
 	mu             sync.Mutex
 	subs           map[chan syncEvent]subscriber
@@ -155,9 +124,9 @@ type syncHub struct {
 	wake chan struct{}
 }
 
-func newSyncHub(db *sql.DB) *syncHub {
+func newSyncHub(db *gorm.DB) *syncHub {
 	h := &syncHub{db: db, subs: map[chan syncEvent]subscriber{}, wake: make(chan struct{}, 1)}
-	_ = db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM sync_log`).Scan(&h.lastDispatched)
+	h.lastDispatched, _ = store.MaxSyncID(db)
 	go h.dispatchLoop()
 	return h
 }
@@ -219,32 +188,26 @@ func (h *syncHub) broadcastEphemeral(entity, entityID string, payload any) {
 // returns rows of all visibilities (dispatcher); otherwise only rows visible
 // to that subscriber (SSE replay).
 func (h *syncHub) readLog(since int64, sub *subscriber) ([]syncEvent, error) {
-	q := `SELECT id, entity, entity_id, action, COALESCE(payload, ''), COALESCE(visible_to, 0)
-		FROM sync_log WHERE id > ?`
-	args := []any{since}
+	var userID int64
+	var isAdmin bool
 	if sub != nil {
-		q += ` AND (visible_to IS NULL OR visible_to = ? OR (visible_to = -1 AND ?))`
-		args = append(args, sub.userID, sub.isAdmin)
+		userID, isAdmin = sub.userID, sub.isAdmin
 	}
-	q += ` ORDER BY id`
-	rows, err := h.db.Query(q, args...)
+	records, err := store.ReadSyncLog(h.db, since, userID, isAdmin, sub != nil)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var evs []syncEvent
-	for rows.Next() {
-		var ev syncEvent
-		var payload string
-		if err := rows.Scan(&ev.ID, &ev.Entity, &ev.EntityID, &ev.Action, &payload, &ev.visibleTo); err != nil {
-			return nil, err
+	events := make([]syncEvent, len(records))
+	for i, record := range records {
+		events[i] = syncEvent{
+			ID: record.ID, Entity: record.Entity, EntityID: record.EntityID,
+			Action: record.Action, visibleTo: record.VisibleTo,
 		}
-		if payload != "" {
-			ev.Payload = json.RawMessage(payload)
+		if record.Payload != "" {
+			events[i].Payload = json.RawMessage(record.Payload)
 		}
-		evs = append(evs, ev)
 	}
-	return evs, rows.Err()
+	return events, nil
 }
 
 // subscribe registers a listener. Events with id > since arrive on the
@@ -269,16 +232,17 @@ func (h *syncHub) unsubscribe(ch chan syncEvent) {
 // compactSyncLog trims deltas older than 7 days. Clients resuming from before
 // the trim point are told to re-bootstrap (via the sync_trimmed_to meta key).
 func (a *App) compactSyncLog() {
-	var maxOld int64
-	_ = a.db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM sync_log
-		WHERE created_at < datetime('now', '-7 days')`).Scan(&maxOld)
+	maxOld, err := store.MaxExpiredSyncID(a.orm)
+	if err != nil {
+		return
+	}
 	if maxOld == 0 {
 		return
 	}
-	if _, err := a.db.Exec(`DELETE FROM sync_log WHERE id <= ?`, maxOld); err != nil {
+	if err := store.DeleteSyncThrough(a.orm, maxOld); err != nil {
 		return
 	}
-	_ = setMeta(a.db, "sync_trimmed_to", strconv.FormatInt(maxOld, 10))
+	_ = a.store.SetMeta("sync_trimmed_to", strconv.FormatInt(maxOld, 10))
 }
 
 // --- HTTP handlers ---
@@ -287,26 +251,19 @@ func (a *App) compactSyncLog() {
 func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *User) {
 	// Read the cursor BEFORE the snapshot: anything committed in between is
 	// replayed by the event stream, and deltas apply idempotently.
-	var syncID int64
-	_ = a.db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM sync_log`).Scan(&syncID)
+	syncID, _ := store.MaxSyncID(a.orm.WithContext(r.Context()))
 
 	// The pool has a single connection: each result set must be fully read
 	// before the next query starts.
-	users := []syncMember{}
-	rows, err := a.db.Query(`SELECT id, name, is_admin FROM users ORDER BY name`)
+	memberRecords, err := store.ListMembers(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	for rows.Next() {
-		var m syncMember
-		var isAdmin int
-		if err := rows.Scan(&m.ID, &m.Name, &isAdmin); err == nil {
-			m.IsAdmin = isAdmin == 1
-			users = append(users, m)
-		}
+	users := make([]syncMember, len(memberRecords))
+	for i, member := range memberRecords {
+		users[i] = syncMember{ID: member.ID, Name: member.Name, IsAdmin: member.IsAdmin}
 	}
-	rows.Close()
 
 	settings, err := a.loadSettings(u.ID)
 	if err != nil {
@@ -314,30 +271,23 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 		return
 	}
 
-	polls, err := loadSyncPolls(a.db)
+	polls, err := loadSyncPollsGORM(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
-	votes := []syncVote{}
-	rows, err = a.db.Query(`SELECT v.poll_slot_id, v.user_id, usr.name, v.vote
-		FROM votes v JOIN users usr ON usr.id = v.user_id ORDER BY usr.name`)
+	voteRecords, err := store.ListVotes(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	for rows.Next() {
-		var v syncVote
-		var vote int
-		if err := rows.Scan(&v.PollSlotID, &v.UserID, &v.Name, &vote); err == nil {
-			v.Vote = vote == 1
-			votes = append(votes, v)
-		}
+	votes := make([]syncVote, len(voteRecords))
+	for i, vote := range voteRecords {
+		votes[i] = syncVote{PollSlotID: vote.PollSlotID, UserID: vote.UserID, Name: vote.Name, Vote: vote.Vote}
 	}
-	rows.Close()
 
-	keys, err := slotSnapshotKeys(a.db)
+	keys, err := slotSnapshotKeysGORM(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -346,9 +296,14 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 	// Invites are admin-only, like their deltas.
 	var invites []Invite
 	if u.IsAdmin {
-		if invites, err = loadInvites(a.db); err != nil {
+		records, loadErr := store.ListInvites(a.orm.WithContext(r.Context()))
+		if loadErr != nil {
 			httpError(w, http.StatusInternalServerError, "database error")
 			return
+		}
+		invites = make([]Invite, len(records))
+		for i, record := range records {
+			invites[i] = inviteFromRecord(record)
 		}
 	}
 
@@ -360,70 +315,51 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 		"votes":           votes,
 		"invites":         invites,
 		"slot_keys":       keys,
-		"last_fetched_at": getMeta(a.db, "last_fetched_at"),
+		"last_fetched_at": a.store.GetMeta("last_fetched_at"),
 		"scraping":        a.isScraping(),
 	})
 }
 
-// loadSyncPolls loads all polls with their slots (two queries, joined in Go).
-func loadSyncPolls(q queryer) ([]*syncPoll, error) {
-	polls := []*syncPoll{}
-	byID := map[int64]*syncPoll{}
-	rows, err := q.Query(`
-		SELECT p.id, p.title, p.creator_id, usr.name, p.status, p.winning_slot_id, p.created_at, p.closed_at
-		FROM polls p JOIN users usr ON usr.id = p.creator_id ORDER BY p.created_at DESC`)
+func loadSyncPollsGORM(db *gorm.DB) ([]*syncPoll, error) {
+	records, err := store.ListPolls(db)
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var p syncPoll
-		if err := rows.Scan(&p.ID, &p.Title, &p.CreatorID, &p.CreatorName, &p.Status,
-			&p.WinningSlotID, &p.CreatedAt, &p.ClosedAt); err != nil {
-			continue
+	polls := make([]*syncPoll, len(records))
+	byID := make(map[int64]*syncPoll, len(records))
+	for i, record := range records {
+		polls[i] = &syncPoll{
+			ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+			Status: record.Status, WinningSlotID: record.WinningSlotID,
+			CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: []syncPollSlot{},
 		}
-		p.Slots = []syncPollSlot{}
-		polls = append(polls, &p)
-		byID[p.ID] = &p
+		byID[record.ID] = polls[i]
 	}
-	rows.Close()
-
-	slotRows, err := q.Query(`SELECT id, poll_id, date, time, duration_minutes, location, court, price, currency
-		FROM poll_slots ORDER BY date, time, location, duration_minutes`)
+	slots, err := store.ListPollSlots(db, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer slotRows.Close()
-	for slotRows.Next() {
-		var s syncPollSlot
-		var pollID int64
-		if err := slotRows.Scan(&s.ID, &pollID, &s.Date, &s.Time, &s.DurationMinutes,
-			&s.Location, &s.Court, &s.Price, &s.Currency); err != nil {
-			continue
-		}
-		if p, ok := byID[pollID]; ok {
-			p.Slots = append(p.Slots, s)
+	for _, slot := range slots {
+		if poll := byID[slot.PollID]; poll != nil {
+			poll.Slots = append(poll.Slots, syncPollSlot{
+				ID: slot.ID, Date: slot.Date, Time: slot.Time, DurationMinutes: slot.DurationMinutes,
+				Location: slot.Location, Court: slot.Court, Price: slot.Price, Currency: slot.Currency,
+			})
 		}
 	}
 	return polls, nil
 }
 
-// slotSnapshotKeys returns the distinct date|time|duration|location keys of
-// the latest scrape — what the client needs to derive slot availability.
-func slotSnapshotKeys(q queryer) ([]string, error) {
-	keys := []string{}
-	rows, err := q.Query(`SELECT DISTINCT date, time, duration_minutes, location FROM slots`)
+func slotSnapshotKeysGORM(db *gorm.DB) ([]string, error) {
+	slots, err := store.ListSlotAvailability(db)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var date, tm, location string
-		var dur int
-		if err := rows.Scan(&date, &tm, &dur, &location); err == nil {
-			keys = append(keys, slotKey(date, tm, dur, location))
-		}
+	keys := make([]string, len(slots))
+	for i, slot := range slots {
+		keys[i] = slotKey(slot.Date, slot.Time, slot.DurationMinutes, slot.Location)
 	}
-	return keys, rows.Err()
+	return keys, nil
 }
 
 // GET /api/sync/events — SSE delta stream. Resumes from Last-Event-ID (sent
@@ -451,7 +387,7 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 
 	// If compaction trimmed past the client's cursor the replay would be
 	// incomplete — tell it to re-bootstrap instead.
-	trimmedTo, _ := strconv.ParseInt(getMeta(a.db, "sync_trimmed_to"), 10, 64)
+	trimmedTo, _ := strconv.ParseInt(a.store.GetMeta("sync_trimmed_to"), 10, 64)
 	if lastID < trimmedTo {
 		fmt.Fprint(w, "event: reset\ndata: {}\n\n")
 		lastID = since

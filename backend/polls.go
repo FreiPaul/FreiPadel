@@ -1,12 +1,15 @@
 package main
 
 import (
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"freipadel/internal/store"
+	"gorm.io/gorm"
 )
 
 func slotKey(date, tm string, duration int, location string) string {
@@ -53,25 +56,19 @@ type Poll struct {
 
 // GET /api/polls — all polls with full details (small group, cheap enough).
 func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
-	rows, err := a.db.Query(`
-		SELECT p.id, p.title, p.creator_id, usr.name, p.status, p.winning_slot_id, p.created_at, p.closed_at
-		FROM polls p JOIN users usr ON usr.id = p.creator_id
-		ORDER BY p.status = 'active' DESC, p.created_at DESC`)
+	records, err := store.ListPolls(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	defer rows.Close()
-
 	polls := []*Poll{}
 	byID := map[int64]*Poll{}
-	for rows.Next() {
-		var p Poll
-		if err := rows.Scan(&p.ID, &p.Title, &p.CreatorID, &p.CreatorName, &p.Status,
-			&p.WinningSlotID, &p.CreatedAt, &p.ClosedAt); err != nil {
-			continue
+	for _, record := range records {
+		p := Poll{
+			ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+			Status: record.Status, WinningSlotID: record.WinningSlotID,
+			CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: []PollSlot{},
 		}
-		p.Slots = []PollSlot{}
 		polls = append(polls, &p)
 		byID[p.ID] = &p
 	}
@@ -85,36 +82,25 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 	// fully read BEFORE the next query: the pool has a single connection, and
 	// a second query while a result set is open would deadlock.
 	availSet := map[string]bool{}
-	availRows, err := a.db.Query(`SELECT DISTINCT date, time, duration_minutes, location FROM slots`)
+	availability, err := store.ListSlotAvailability(a.orm.WithContext(r.Context()))
 	if err == nil {
-		for availRows.Next() {
-			var date, tm, location string
-			var dur int
-			if err := availRows.Scan(&date, &tm, &dur, &location); err == nil {
-				availSet[slotKey(date, tm, dur, location)] = true
-			}
+		for _, slot := range availability {
+			availSet[slotKey(slot.Date, slot.Time, slot.DurationMinutes, slot.Location)] = true
 		}
-		availRows.Close()
 	}
 	now := time.Now().In(a.tz)
 	today, nowTime := now.Format("2006-01-02"), now.Format("15:04")
 
-	slotRows, err := a.db.Query(`
-		SELECT id, poll_id, date, time, duration_minutes, location, court, price, currency
-		FROM poll_slots ORDER BY date, time, location, duration_minutes`)
+	slotRecords, err := store.ListPollSlots(a.orm.WithContext(r.Context()), nil)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	defer slotRows.Close()
-
 	slotByID := map[int64]*PollSlot{}
-	for slotRows.Next() {
-		var s PollSlot
-		var pollID int64
-		if err := slotRows.Scan(&s.ID, &pollID, &s.Date, &s.Time, &s.DurationMinutes,
-			&s.Location, &s.Court, &s.Price, &s.Currency); err != nil {
-			continue
+	for _, record := range slotRecords {
+		s := PollSlot{
+			ID: record.ID, Date: record.Date, Time: record.Time, DurationMinutes: record.DurationMinutes,
+			Location: record.Location, Court: record.Court, Price: record.Price, Currency: record.Currency,
 		}
 		s.Votes = []Voter{}
 		s.Expired = s.Date < today || (s.Date == today && s.Time <= nowTime)
@@ -122,7 +108,7 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 		if strings.Contains(strings.ToLower(s.Court), "single") {
 			s.Available = false
 		}
-		if p, ok := byID[pollID]; ok {
+		if p, ok := byID[record.PollID]; ok {
 			p.Slots = append(p.Slots, s)
 		}
 	}
@@ -133,24 +119,14 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 		}
 	}
 
-	voteRows, err := a.db.Query(`
-		SELECT v.poll_slot_id, v.user_id, usr.name, v.vote
-		FROM votes v JOIN users usr ON usr.id = v.user_id
-		ORDER BY usr.name`)
+	voteRecords, err := store.ListVotes(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	defer voteRows.Close()
-	for voteRows.Next() {
-		var slotID int64
-		var voter Voter
-		var vote int
-		if err := voteRows.Scan(&slotID, &voter.UserID, &voter.Name, &vote); err != nil {
-			continue
-		}
-		voter.Vote = vote == 1
-		s, ok := slotByID[slotID]
+	for _, record := range voteRecords {
+		voter := Voter{UserID: record.UserID, Name: record.Name, Vote: record.Vote}
+		s, ok := slotByID[record.PollSlotID]
 		if !ok {
 			continue
 		}
@@ -205,43 +181,32 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		}
 	}
 
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-
-	res, err := tx.Exec(`INSERT INTO polls (creator_id, title) VALUES (?, ?)`, u.ID, req.Title)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	pollID, _ := res.LastInsertId()
-
-	for _, s := range req.Slots {
+	slots := make([]store.PollSlotRecord, len(req.Slots))
+	for i, s := range req.Slots {
 		currency := s.Currency
 		if currency == "" {
 			currency = "EUR"
 		}
-		_, err := tx.Exec(`INSERT INTO poll_slots (poll_id, date, time, duration_minutes, location, court, price, currency)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			pollID, s.Date, s.Time, s.DurationMinutes, s.Location, strings.Join(s.Courts, ", "), s.MinPrice, currency)
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "database error")
-			return
+		slots[i] = store.PollSlotRecord{
+			Date: s.Date, Time: s.Time, DurationMinutes: s.DurationMinutes,
+			Location: s.Location, Court: strings.Join(s.Courts, ", "), Price: s.MinPrice, Currency: currency,
 		}
 	}
-	syncP, err := loadSyncPoll(tx, pollID)
+	var pollID int64
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		pollID, err = store.CreatePoll(tx, u.ID, req.Title, slots)
+		if err != nil {
+			return err
+		}
+		poll, err := loadSyncPollGORM(tx, pollID)
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(poll)
+		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", payload, 0)
+	})
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if err := appendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", syncP, 0); err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if err := tx.Commit(); err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -267,12 +232,8 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request, u *User) {
 		return
 	}
 
-	var status string
-	var slotPollID int64
-	err = a.db.QueryRow(`
-		SELECT p.status, ps.poll_id FROM poll_slots ps JOIN polls p ON p.id = ps.poll_id
-		WHERE ps.id = ?`, req.PollSlotID).Scan(&status, &slotPollID)
-	if err == sql.ErrNoRows || slotPollID != pollID {
+	slotPollID, status, err := store.FindPollForSlot(a.orm.WithContext(r.Context()), req.PollSlotID)
+	if store.IsNotFound(err) || slotPollID != pollID {
 		httpError(w, http.StatusNotFound, "slot not found in this poll")
 		return
 	}
@@ -285,34 +246,20 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request, u *User) {
 		return
 	}
 
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
 	voteEntityID := fmt.Sprintf("%d|%d", req.PollSlotID, u.ID)
-	if req.Vote == nil {
-		_, err = tx.Exec(`DELETE FROM votes WHERE poll_slot_id = ? AND user_id = ?`, req.PollSlotID, u.ID)
-		if err == nil {
-			err = appendSync(tx, "vote", voteEntityID, "delete", nil, 0)
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if req.Vote == nil {
+			if err := store.DeleteVote(tx, req.PollSlotID, u.ID); err != nil {
+				return err
+			}
+			return store.AppendSync(tx, "vote", voteEntityID, "delete", nil, 0)
 		}
-	} else {
-		v := 0
-		if *req.Vote {
-			v = 1
+		if err := store.UpsertVote(tx, req.PollSlotID, u.ID, *req.Vote); err != nil {
+			return err
 		}
-		_, err = tx.Exec(`INSERT INTO votes (poll_slot_id, user_id, vote) VALUES (?, ?, ?)
-			ON CONFLICT(poll_slot_id, user_id) DO UPDATE SET vote = excluded.vote, updated_at = datetime('now')`,
-			req.PollSlotID, u.ID, v)
-		if err == nil {
-			err = appendSync(tx, "vote", voteEntityID, "upsert",
-				syncVote{PollSlotID: req.PollSlotID, UserID: u.ID, Name: u.Name, Vote: *req.Vote}, 0)
-		}
-	}
-	if err == nil {
-		err = tx.Commit()
-	}
+		payload, _ := json.Marshal(syncVote{PollSlotID: req.PollSlotID, UserID: u.ID, Name: u.Name, Vote: *req.Vote})
+		return store.AppendSync(tx, "vote", voteEntityID, "upsert", payload, 0)
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -335,10 +282,8 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 		return
 	}
 
-	var creatorID int64
-	var status string
-	err = a.db.QueryRow(`SELECT creator_id, status FROM polls WHERE id = ?`, pollID).Scan(&creatorID, &status)
-	if err == sql.ErrNoRows {
+	poll, err := store.FindPoll(a.orm.WithContext(r.Context()), pollID)
+	if store.IsNotFound(err) {
 		httpError(w, http.StatusNotFound, "poll not found")
 		return
 	}
@@ -346,41 +291,37 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	if creatorID != u.ID && !u.IsAdmin {
+	if poll.CreatorID != u.ID && !u.IsAdmin {
 		httpError(w, http.StatusForbidden, "only the poll creator can close it")
 		return
 	}
-	if status != "active" {
+	if poll.Status != "active" {
 		httpError(w, http.StatusConflict, "poll is already closed")
 		return
 	}
 	if req.WinningSlotID != nil {
-		var n int
-		_ = a.db.QueryRow(`SELECT COUNT(*) FROM poll_slots WHERE id = ? AND poll_id = ?`,
-			*req.WinningSlotID, pollID).Scan(&n)
-		if n == 0 {
+		belongs, err := store.PollSlotBelongsTo(a.orm.WithContext(r.Context()), *req.WinningSlotID, pollID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if !belongs {
 			httpError(w, http.StatusBadRequest, "winning slot does not belong to this poll")
 			return
 		}
 	}
 
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-	_, err = tx.Exec(`UPDATE polls SET status = 'closed', winning_slot_id = ?, closed_at = datetime('now') WHERE id = ?`,
-		req.WinningSlotID, pollID)
-	if err == nil {
-		var p *syncPoll
-		if p, err = loadSyncPoll(tx, pollID); err == nil {
-			err = appendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", p, 0)
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := store.ClosePoll(tx, pollID, req.WinningSlotID); err != nil {
+			return err
 		}
-	}
-	if err == nil {
-		err = tx.Commit()
-	}
+		poll, err := loadSyncPollGORM(tx, pollID)
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(poll)
+		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", payload, 0)
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -396,9 +337,8 @@ func (a *App) handleDeletePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		httpError(w, http.StatusBadRequest, "invalid poll id")
 		return
 	}
-	var creatorID int64
-	err = a.db.QueryRow(`SELECT creator_id FROM polls WHERE id = ?`, pollID).Scan(&creatorID)
-	if err == sql.ErrNoRows {
+	poll, err := store.FindPoll(a.orm.WithContext(r.Context()), pollID)
+	if store.IsNotFound(err) {
 		httpError(w, http.StatusNotFound, "poll not found")
 		return
 	}
@@ -406,23 +346,16 @@ func (a *App) handleDeletePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	if creatorID != u.ID && !u.IsAdmin {
+	if poll.CreatorID != u.ID && !u.IsAdmin {
 		httpError(w, http.StatusForbidden, "only the poll creator can delete it")
 		return
 	}
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-	_, err = tx.Exec(`DELETE FROM polls WHERE id = ?`, pollID)
-	if err == nil {
-		err = appendSync(tx, "poll", strconv.FormatInt(pollID, 10), "delete", nil, 0)
-	}
-	if err == nil {
-		err = tx.Commit()
-	}
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := store.DeletePoll(tx, pollID); err != nil {
+			return err
+		}
+		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "delete", nil, 0)
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return

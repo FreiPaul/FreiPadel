@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -15,14 +15,17 @@ import (
 	_ "time/tzdata" // so Europe/Berlin works in scratch/alpine containers
 
 	"freipadel/emailer"
+	"freipadel/internal/store"
 	"freipadel/scraper"
 	"freipadel/telegram"
+	"gorm.io/gorm"
 )
 
 var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 type App struct {
-	db            *sql.DB
+	store         *store.Store
+	orm           *gorm.DB
 	scrapeCfg     scraper.Config
 	scraper       *scraper.Scraper
 	tz            *time.Location
@@ -60,11 +63,10 @@ func main() {
 		log.Fatalf("create data dir: %v", err)
 	}
 
-	db, err := openDB(filepath.Join(dataDir, "freipadel.db"))
+	storage, err := store.Open(filepath.Join(dataDir, "freipadel.db"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-
 	scrapeCfg, err := scraper.LoadConfig(filepath.Join(dataDir, "config.json"))
 	if err != nil {
 		log.Fatalf("load scraper config: %v", err)
@@ -89,7 +91,8 @@ func main() {
 	}
 
 	app := &App{
-		db:             db,
+		store:          storage,
+		orm:            storage.ORM,
 		scrapeCfg:      scrapeCfg,
 		scraper:        scr,
 		tz:             tz,
@@ -102,7 +105,7 @@ func main() {
 	} else {
 		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS and EMAILER_ENABLED=\"1\")")
 	}
-	app.hub = newSyncHub(db)
+	app.hub = newSyncHub(storage.ORM)
 
 	// Background scrape loop.
 	intervalMin, _ := strconv.Atoi(envOr("SCRAPE_INTERVAL_MINUTES", "30"))
@@ -114,7 +117,7 @@ func main() {
 	// Hourly session cleanup + sync log compaction.
 	go func() {
 		for {
-			_, _ = db.Exec(`DELETE FROM sessions WHERE expires_at <= datetime('now')`)
+			_ = store.DeleteExpiredSessions(storage.ORM)
 			app.compactSyncLog()
 			time.Sleep(time.Hour)
 		}
@@ -222,7 +225,7 @@ func (a *App) triggerScrape() bool {
 
 func (a *App) scrapeLoop(interval time.Duration) {
 	// on startup: respect last_fetched_at from database
-	lastScraped := getMeta(a.db, "last_fetched_at")
+	lastScraped := a.store.GetMeta("last_fetched_at")
 	lastScrapedTime, err := time.Parse(time.RFC3339, lastScraped)
 	if err == nil {
 		a.mu.Lock()
@@ -252,53 +255,35 @@ func (a *App) runScrape() {
 		return
 	}
 
-	tx, err := a.db.Begin()
-	if err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`DELETE FROM slots`); err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	stmt, err := tx.Prepare(`INSERT INTO slots (source, location, court, date, time, duration_minutes, price, currency)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	defer stmt.Close()
 	keySet := map[string]bool{}
 	keys := []string{}
+	records := make([]store.SlotRecord, 0, len(slots))
 	for _, s := range slots {
 		if strings.Contains(strings.ToLower(s.Court), "single") {
 			continue
 		}
-		if _, err := stmt.Exec(s.Source, s.Location, s.Court, s.Date, s.Time, s.DurationMinutes, s.Price, s.Currency); err != nil {
-			log.Printf("scrape store: %v", err)
-			return
-		}
+		records = append(records, store.SlotRecord{
+			Source: s.Source, Location: s.Location, Court: s.Court, Date: s.Date, Time: s.Time,
+			DurationMinutes: s.DurationMinutes, Price: s.Price, Currency: s.Currency,
+		})
 		if k := slotKey(s.Date, s.Time, s.DurationMinutes, s.Location); !keySet[k] {
 			keySet[k] = true
 			keys = append(keys, k)
 		}
 	}
 	fetchedAt := time.Now().In(a.tz).Format(time.RFC3339)
-	// One delta for the whole snapshot — clients derive poll-slot availability
-	// from the keys and refetch their filtered slot list.
-	if err := appendSync(tx, "slots", "snapshot", "upsert", map[string]any{
-		"keys": keys, "last_fetched_at": fetchedAt,
-	}, 0); err != nil {
+	err = a.orm.Transaction(func(tx *gorm.DB) error {
+		if err := store.ReplaceSlots(tx, records); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]any{"keys": keys, "last_fetched_at": fetchedAt})
+		return store.AppendSync(tx, "slots", "snapshot", "upsert", payload, 0)
+	})
+	if err != nil {
 		log.Printf("scrape store: %v", err)
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		log.Printf("scrape store: %v", err)
-		return
-	}
-	_ = setMeta(a.db, "last_fetched_at", fetchedAt)
+	_ = a.store.SetMeta("last_fetched_at", fetchedAt)
 	a.hub.notify()
 	log.Printf("scrape done: %d slots in %s", len(slots), time.Since(start).Round(time.Millisecond))
 }

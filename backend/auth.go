@@ -1,7 +1,7 @@
 package main
 
 import (
-	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"freipadel/internal/store"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 const (
@@ -58,29 +60,25 @@ func (a *App) userFromRequest(r *http.Request) (*User, error) {
 	if err != nil || c.Value == "" {
 		return nil, errors.New("no session")
 	}
-	var u User
-	var isAdmin int
-	err = a.db.QueryRow(`
-		SELECT u.id, u.email, u.name, u.is_admin
-		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token = ? AND s.expires_at > datetime('now')`,
-		hashToken(c.Value)).Scan(&u.ID, &u.Email, &u.Name, &isAdmin)
+	record, err := store.FindUserBySession(a.orm.WithContext(r.Context()), hashToken(c.Value))
 	if err != nil {
 		return nil, errors.New("invalid session")
 	}
-	u.IsAdmin = isAdmin == 1
-	return &u, nil
+	return &User{ID: record.ID, Email: record.Email, Name: record.Name, IsAdmin: record.IsAdmin}, nil
 }
 
 func (a *App) createSession(w http.ResponseWriter, userID int64) error {
 	token := randomToken(32)
 	expires := time.Now().UTC().Add(sessionLifetime)
 	// Store only the hash; the raw token is handed to the browser via the cookie below.
-	_, err := a.db.Exec(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
-		hashToken(token), userID, expires.Format("2006-01-02 15:04:05"))
-	if err != nil {
+	if err := store.CreateSession(a.orm, hashToken(token), userID, expires.Format("2006-01-02 15:04:05")); err != nil {
 		return err
 	}
+	a.setSessionCookie(w, token, expires)
+	return nil
+}
+
+func (a *App) setSessionCookie(w http.ResponseWriter, token string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
@@ -90,13 +88,12 @@ func (a *App) createSession(w http.ResponseWriter, userID int64) error {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   a.secureCookies,
 	})
-	return nil
 }
 
 // GET /api/auth/setup — whether the very first user still needs to be created.
 func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
-	var count int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+	count, err := store.CountUsers(a.orm.WithContext(r.Context()))
+	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -130,90 +127,91 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userCount int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	firstUser := userCount == 0
-
-	// Everyone except the very first user needs a valid invite: a one-time
-	// link that is still unused, or a group link that is not disabled.
-	if !firstUser {
-		var used sql.NullInt64
-		var kind string
-		var email string
-		var disabled int
-		err := a.db.QueryRow(`SELECT used_by, kind, disabled, email FROM invites WHERE token = ?`,
-			req.InviteToken).Scan(&used, &kind, &disabled, &email)
-		if err == sql.ErrNoRows {
-			httpError(w, http.StatusForbidden, "invalid invite link")
-			return
-		}
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "database error")
-			return
-		}
-		if disabled == 1 {
-			httpError(w, http.StatusForbidden, "this invite link has been disabled")
-			return
-		}
-		if kind != "group" && used.Valid {
-			httpError(w, http.StatusForbidden, "this invite link has already been used")
-			return
-		}
-		if kind == "email" && req.Email != email {
-			httpError(w, http.StatusForbidden, "this invite belongs to another email")
-			return
-		}
-	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "could not hash password")
 		return
 	}
 
-	isAdmin := 0
-	if firstUser {
-		isAdmin = 1
-	}
-	res, err := a.db.Exec(`INSERT INTO users (email, name, password_hash, is_admin) VALUES (?, ?, ?, ?)`,
-		req.Email, req.Name, string(hash), isAdmin)
-	if err != nil {
-		httpError(w, http.StatusConflict, "an account with this email already exists")
-		return
-	}
-	userID, _ := res.LastInsertId()
-
-	// Default availability settings (weekdays 19:00–21:00).
-	_, _ = a.db.Exec(`INSERT INTO user_settings (user_id) VALUES (?)`, userID)
-
-	_ = appendSync(a.db, "user", strconv.FormatInt(userID, 10), "upsert",
-		syncMember{ID: userID, Name: req.Name, IsAdmin: firstUser}, 0)
-
-	if !firstUser {
-		// Group invites just count registrations; one-time invites are marked used.
-		_, _ = a.db.Exec(`UPDATE invites SET
-				uses = uses + 1,
-				used_by = CASE WHEN kind = 'group' THEN used_by ELSE ? END,
-				used_at = CASE WHEN kind = 'group' THEN used_at ELSE datetime('now') END
-			WHERE token = ?`,
-			userID, req.InviteToken)
-		// Admins see the invite flip to used/counted live.
-		if inv, err := loadInvite(a.db, req.InviteToken); err == nil {
-			_ = appendSync(a.db, "invite", inv.Token, "upsert", inv, visibleToAdmins)
+	token := randomToken(32)
+	expires := time.Now().UTC().Add(sessionLifetime)
+	var created store.UserRecord
+	var firstUser bool
+	var responseStatus int
+	var responseMessage string
+	accountConflict := false
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		userCount, err := store.CountUsers(tx)
+		if err != nil {
+			return err
 		}
-	}
-	// One notify after all deltas of this registration are in the log.
-	a.hub.notify()
+		firstUser = userCount == 0
+		if !firstUser {
+			invite, err := store.FindInvite(tx, req.InviteToken)
+			if store.IsNotFound(err) {
+				responseStatus, responseMessage = http.StatusForbidden, "invalid invite link"
+				return errors.New(responseMessage)
+			}
+			if err != nil {
+				return err
+			}
+			if invite.Disabled {
+				responseStatus, responseMessage = http.StatusForbidden, "this invite link has been disabled"
+				return errors.New(responseMessage)
+			}
+			if invite.Kind != "group" && invite.UsedByID != nil {
+				responseStatus, responseMessage = http.StatusForbidden, "this invite link has already been used"
+				return errors.New(responseMessage)
+			}
+			if invite.Kind == "email" && (invite.Email == nil || req.Email != *invite.Email) {
+				responseStatus, responseMessage = http.StatusForbidden, "this invite belongs to another email"
+				return errors.New(responseMessage)
+			}
+		}
 
-	if err := a.createSession(w, userID); err != nil {
-		httpError(w, http.StatusInternalServerError, "could not create session")
+		created, err = store.CreateUser(tx, req.Email, req.Name, string(hash), firstUser)
+		if err != nil {
+			accountConflict = true
+			return err
+		}
+		if err := store.CreateDefaultSettings(tx, created.ID); err != nil {
+			return err
+		}
+		memberPayload, _ := json.Marshal(syncMember{ID: created.ID, Name: created.Name, IsAdmin: created.IsAdmin})
+		if err := store.AppendSync(tx, "user", strconv.FormatInt(created.ID, 10), "upsert", memberPayload, 0); err != nil {
+			return err
+		}
+		if !firstUser {
+			if err := store.RedeemInvite(tx, req.InviteToken, created.ID); err != nil {
+				return err
+			}
+			invite, err := store.FindInvite(tx, req.InviteToken)
+			if err != nil {
+				return err
+			}
+			payload, _ := json.Marshal(inviteFromRecord(invite))
+			if err := store.AppendSync(tx, "invite", invite.Token, "upsert", payload, visibleToAdmins); err != nil {
+				return err
+			}
+		}
+		return store.CreateSession(tx, hashToken(token), created.ID, expires.Format("2006-01-02 15:04:05"))
+	})
+	if responseStatus != 0 {
+		httpError(w, responseStatus, responseMessage)
 		return
 	}
+	if err != nil {
+		if accountConflict {
+			httpError(w, http.StatusConflict, "an account with this email already exists")
+		} else {
+			httpError(w, http.StatusInternalServerError, "database error")
+		}
+		return
+	}
+	a.hub.notify()
+	a.setSessionCookie(w, token, expires)
 	writeJSON(w, http.StatusCreated, Me{
-		User:           User{ID: userID, Email: req.Email, Name: req.Name, IsAdmin: firstUser},
+		User:           User{ID: created.ID, Email: created.Email, Name: created.Name, IsAdmin: created.IsAdmin},
 		EmailerEnabled: a.emailer.Configured()},
 	)
 
@@ -232,16 +230,12 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	var u User
-	var hash string
-	var isAdmin int
-	err := a.db.QueryRow(`SELECT id, email, name, password_hash, is_admin FROM users WHERE email = ?`,
-		req.Email).Scan(&u.ID, &u.Email, &u.Name, &hash, &isAdmin)
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+	record, err := store.FindUserByEmail(a.orm.WithContext(r.Context()), req.Email)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)) != nil {
 		httpError(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
-	u.IsAdmin = isAdmin == 1
+	u := User{ID: record.ID, Email: record.Email, Name: record.Name, IsAdmin: record.IsAdmin}
 
 	if err := a.createSession(w, u.ID); err != nil {
 		httpError(w, http.StatusInternalServerError, "could not create session")
@@ -258,7 +252,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 // POST /api/auth/logout
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		_, _ = a.db.Exec(`DELETE FROM sessions WHERE token = ?`, hashToken(c.Value))
+		_ = store.DeleteSession(a.orm.WithContext(r.Context()), hashToken(c.Value))
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,

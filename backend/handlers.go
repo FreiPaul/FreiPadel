@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -11,7 +10,9 @@ import (
 	"strconv"
 	"time"
 
+	"freipadel/internal/store"
 	"freipadel/scraper"
+	"gorm.io/gorm"
 )
 
 var timeRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
@@ -51,11 +52,8 @@ func mergeNotifications(stored map[string]bool) map[string]bool {
 
 func (a *App) loadSettings(userID int64) (Settings, error) {
 	var s Settings
-	var weekdaysJSON, locationsJSON, notificationsJSON string
-	err := a.db.QueryRow(`SELECT weekdays, time_start, time_end, days_ahead, min_duration, locations, notifications
-		FROM user_settings WHERE user_id = ?`, userID).
-		Scan(&weekdaysJSON, &s.TimeStart, &s.TimeEnd, &s.DaysAhead, &s.MinDuration, &locationsJSON, &notificationsJSON)
-	if err == sql.ErrNoRows {
+	record, err := store.FindSettings(a.orm, userID)
+	if store.IsNotFound(err) {
 		// Older account without a settings row — use defaults.
 		return Settings{Weekdays: []int{0, 1, 2, 3, 4}, TimeStart: "19:00", TimeEnd: "21:00",
 			DaysAhead: 10, MinDuration: 60, Locations: []string{}, Notifications: mergeNotifications(nil)}, nil
@@ -63,6 +61,9 @@ func (a *App) loadSettings(userID int64) (Settings, error) {
 	if err != nil {
 		return s, err
 	}
+	weekdaysJSON, locationsJSON, notificationsJSON := record.Weekdays, record.Locations, record.Notifications
+	s.TimeStart, s.TimeEnd = record.TimeStart, record.TimeEnd
+	s.DaysAhead, s.MinDuration = record.DaysAhead, record.MinDuration
 	if err := json.Unmarshal([]byte(weekdaysJSON), &s.Weekdays); err != nil {
 		s.Weekdays = []int{0, 1, 2, 3, 4}
 	}
@@ -130,27 +131,17 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 	weekdaysJSON, _ := json.Marshal(s.Weekdays)
 	locationsJSON, _ := json.Marshal(s.Locations)
 	notificationsJSON, _ := json.Marshal(s.Notifications)
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO user_settings (user_id, weekdays, time_start, time_end, days_ahead, min_duration, locations, notifications)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(user_id) DO UPDATE SET
-			weekdays = excluded.weekdays, time_start = excluded.time_start,
-			time_end = excluded.time_end, days_ahead = excluded.days_ahead,
-			min_duration = excluded.min_duration, locations = excluded.locations,
-			notifications = excluded.notifications`,
-		u.ID, string(weekdaysJSON), s.TimeStart, s.TimeEnd, s.DaysAhead, s.MinDuration, string(locationsJSON), string(notificationsJSON))
-	if err == nil {
-		// Settings are private — the delta is only visible to its owner.
-		err = appendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", s, u.ID)
-	}
-	if err == nil {
-		err = tx.Commit()
-	}
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := store.UpsertSettings(tx, store.SettingsRecord{
+			UserID: u.ID, Weekdays: string(weekdaysJSON), TimeStart: s.TimeStart, TimeEnd: s.TimeEnd,
+			DaysAhead: s.DaysAhead, MinDuration: s.MinDuration,
+			Locations: string(locationsJSON), Notifications: string(notificationsJSON),
+		}); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(s)
+		return store.AppendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", payload, u.ID)
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -199,24 +190,14 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 	maxDate := now.AddDate(0, 0, s.DaysAhead-1).Format("2006-01-02")
 	nowTime := now.Format("15:04")
 
-	rows, err := a.db.Query(`
-		SELECT date, time, duration_minutes, location, source, currency,
-		       MIN(price) AS min_price,
-		       GROUP_CONCAT(court, '|') AS courts
-		FROM slots
-		WHERE date >= ? AND date <= ?
-		  AND time >= ? AND time <= ?
-		  AND duration_minutes >= ?
-		  AND court NOT LIKE '%single%'
-		  AND NOT (date = ? AND time <= ?) -- hide slots already in the past today
-		GROUP BY date, time, duration_minutes, location, source, currency
-		ORDER BY date, time, location, duration_minutes`,
-		minDate, maxDate, s.TimeStart, s.TimeEnd, s.MinDuration, minDate, nowTime)
+	records, err := store.ListSlotGroups(a.orm.WithContext(r.Context()), store.SlotFilter{
+		MinDate: minDate, MaxDate: maxDate, TimeStart: s.TimeStart, TimeEnd: s.TimeEnd,
+		MinDuration: s.MinDuration, NowTime: nowTime,
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	defer rows.Close()
 
 	wanted := map[int]bool{}
 	for _, d := range s.Weekdays {
@@ -228,11 +209,10 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 	}
 
 	groups := []SlotGroup{}
-	for rows.Next() {
-		var g SlotGroup
-		var courts string
-		if err := rows.Scan(&g.Date, &g.Time, &g.DurationMinutes, &g.Location, &g.Source, &g.Currency, &g.MinPrice, &courts); err != nil {
-			continue
+	for _, record := range records {
+		g := SlotGroup{
+			Date: record.Date, Time: record.Time, DurationMinutes: record.DurationMinutes,
+			Location: record.Location, Source: record.Source, Currency: record.Currency, MinPrice: record.MinPrice,
 		}
 		d, err := time.ParseInLocation("2006-01-02", g.Date, a.tz)
 		if err != nil {
@@ -245,13 +225,13 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 		if len(wantedLoc) > 0 && !wantedLoc[g.Location] {
 			continue
 		}
-		g.Courts = splitCourts(courts)
+		g.Courts = splitCourts(record.Courts)
 		groups = append(groups, g)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"slots":           groups,
-		"last_fetched_at": getMeta(a.db, "last_fetched_at"),
+		"last_fetched_at": a.store.GetMeta("last_fetched_at"),
 		"scraping":        a.isScraping(),
 	})
 }
@@ -279,18 +259,10 @@ func splitCourts(s string) []string {
 // GET /api/locations — all locations currently present in the slot cache,
 // for the location filter UI.
 func (a *App) handleListLocations(w http.ResponseWriter, r *http.Request, u *User) {
-	rows, err := a.db.Query(`SELECT DISTINCT location FROM slots ORDER BY location`)
+	locations, err := store.ListLocations(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
-	}
-	defer rows.Close()
-	locations := []string{}
-	for rows.Next() {
-		var l string
-		if err := rows.Scan(&l); err == nil {
-			locations = append(locations, l)
-		}
 	}
 	writeJSON(w, http.StatusOK, locations)
 }
@@ -303,25 +275,19 @@ func (a *App) handleRefreshSlots(w http.ResponseWriter, r *http.Request, u *User
 
 // GET /api/users — group members (for showing who voted).
 func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request, u *User) {
-	rows, err := a.db.Query(`SELECT id, name, is_admin FROM users ORDER BY name`)
+	records, err := store.ListMembers(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	defer rows.Close()
 	type member struct {
 		ID      int64  `json:"id"`
 		Name    string `json:"name"`
 		IsAdmin bool   `json:"is_admin"`
 	}
 	members := []member{}
-	for rows.Next() {
-		var m member
-		var isAdmin int
-		if err := rows.Scan(&m.ID, &m.Name, &isAdmin); err == nil {
-			m.IsAdmin = isAdmin == 1
-			members = append(members, m)
-		}
+	for _, record := range records {
+		members = append(members, member{ID: record.ID, Name: record.Name, IsAdmin: record.IsAdmin})
 	}
 	writeJSON(w, http.StatusOK, members)
 }
@@ -339,41 +305,12 @@ type Invite struct {
 	Uses      int     `json:"uses"`
 }
 
-// loadInvite loads one invite in the API/sync wire shape.
-func loadInvite(q queryer, token string) (*Invite, error) {
-	var inv Invite
-	var disabled int
-	err := q.QueryRow(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses, i.email
-		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
-		WHERE i.token = ?`, token).
-		Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses, &inv.Email)
-	if err != nil {
-		return nil, err
+func inviteFromRecord(record store.InviteRecord) Invite {
+	return Invite{
+		Token: record.Token, Kind: record.Kind, Email: record.Email,
+		CreatedAt: record.CreatedAt, UsedBy: record.UsedByName, UsedAt: record.UsedAt,
+		Disabled: record.Disabled, Uses: record.Uses,
 	}
-	inv.Disabled = disabled == 1
-	return &inv, nil
-}
-
-func loadInvites(q queryer) ([]Invite, error) {
-	rows, err := q.Query(`
-		SELECT i.token, i.kind, i.created_at, i.used_at, usr.name, i.disabled, i.uses, i.email
-		FROM invites i LEFT JOIN users usr ON usr.id = i.used_by
-		ORDER BY i.created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	invites := []Invite{}
-	for rows.Next() {
-		var inv Invite
-		var disabled int
-		if err := rows.Scan(&inv.Token, &inv.Kind, &inv.CreatedAt, &inv.UsedAt, &inv.UsedBy, &disabled, &inv.Uses, &inv.Email); err == nil {
-			inv.Disabled = disabled == 1
-			invites = append(invites, inv)
-		}
-	}
-	return invites, rows.Err()
 }
 
 // POST /api/invites — body: {"kind": "single"|"group"} (defaults to single).
@@ -407,12 +344,7 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	}
 
 	// check wether email is already present in db
-	var exists bool
-	err := a.db.QueryRow(
-		`SELECT (EXISTS(SELECT 1 FROM users WHERE email = ?) OR EXISTS(SELECT 1 FROM invites WHERE email = ?))`,
-		req.Email,
-		req.Email,
-	).Scan(&exists)
+	exists, err := store.UserOrInviteEmailExists(a.orm.WithContext(r.Context()), req.Email)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -423,22 +355,17 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	}
 
 	token := randomToken(16)
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO invites (token, created_by, kind, email) VALUES (?, ?, ?, ?)`, token, u.ID, req.Kind, req.Email)
-	if err == nil {
-		var inv *Invite
-		if inv, err = loadInvite(tx, token); err == nil {
-			err = appendSync(tx, "invite", token, "upsert", inv, visibleToAdmins)
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := store.CreateInvite(tx, token, u.ID, req.Kind, &req.Email); err != nil {
+			return err
 		}
-	}
-	if err == nil {
-		err = tx.Commit()
-	}
+		inv, err := store.FindInvite(tx, token)
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(inviteFromRecord(inv))
+		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins)
+	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -459,10 +386,14 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 
 // GET /api/invites
 func (a *App) handleListInvites(w http.ResponseWriter, r *http.Request, u *User) {
-	invites, err := loadInvites(a.db)
+	records, err := store.ListInvites(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
+	}
+	invites := make([]Invite, len(records))
+	for i, record := range records {
+		invites[i] = inviteFromRecord(record)
 	}
 	writeJSON(w, http.StatusOK, invites)
 }
@@ -470,27 +401,26 @@ func (a *App) handleListInvites(w http.ResponseWriter, r *http.Request, u *User)
 // POST /api/invites/{token}/disable — stops the link from accepting registrations.
 func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	token := r.PathValue("token")
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(`UPDATE invites SET disabled = 1 WHERE token = ?`, token)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	notFound := false
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		affected, err := store.DisableInvite(tx, token)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			notFound = true
+			return gorm.ErrRecordNotFound
+		}
+		inv, err := store.FindInvite(tx, token)
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(inviteFromRecord(inv))
+		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins)
+	})
+	if notFound {
 		httpError(w, http.StatusNotFound, "invite not found")
 		return
-	}
-	var inv *Invite
-	if inv, err = loadInvite(tx, token); err == nil {
-		err = appendSync(tx, "invite", token, "upsert", inv, visibleToAdmins)
-	}
-	if err == nil {
-		err = tx.Commit()
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -504,23 +434,21 @@ func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *Use
 // also stops them working); single invites only while unused.
 func (a *App) handleDeleteInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	token := r.PathValue("token")
-	tx, err := a.db.Begin()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(`DELETE FROM invites WHERE token = ? AND (kind = 'group' OR used_by IS NULL)`, token)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	notFound := false
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		affected, err := store.DeleteInvite(tx, token)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			notFound = true
+			return gorm.ErrRecordNotFound
+		}
+		return store.AppendSync(tx, "invite", token, "delete", nil, visibleToAdmins)
+	})
+	if notFound {
 		httpError(w, http.StatusNotFound, "invite not found or already used")
 		return
-	}
-	if err = appendSync(tx, "invite", token, "delete", nil, visibleToAdmins); err == nil {
-		err = tx.Commit()
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -533,13 +461,8 @@ func (a *App) handleDeleteInvite(w http.ResponseWriter, r *http.Request, u *User
 // GET /api/invites/{token}/check — public; lets the register page validate a link.
 func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	var used sql.NullInt64
-	var kind string
-	var disabled int
-	var email string
-	err := a.db.QueryRow(`SELECT used_by, kind, disabled, email FROM invites WHERE token = ?`, token).
-		Scan(&used, &kind, &disabled, &email)
-	if err == sql.ErrNoRows {
+	invite, err := store.FindInvite(a.orm.WithContext(r.Context()), token)
+	if store.IsNotFound(err) {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "unknown"})
 		return
 	}
@@ -547,13 +470,17 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	if disabled == 1 {
+	if invite.Disabled {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "disabled"})
 		return
 	}
-	if kind != "group" && used.Valid {
+	if invite.Kind != "group" && invite.UsedByID != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "used"})
 		return
+	}
+	email := ""
+	if invite.Email != nil {
+		email = *invite.Email
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"valid": true, "email": email})
 }

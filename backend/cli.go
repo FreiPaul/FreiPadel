@@ -1,14 +1,15 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"freipadel/internal/store"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 const cliUsage = `FreiPadel admin CLI (runs against DATA_DIR, also works while the server is running)
@@ -24,11 +25,12 @@ Usage:
 // access from a docker exec safe.
 func runCLI(args []string) {
 	dataDir := envOr("DATA_DIR", "./data")
-	db, err := openDB(filepath.Join(dataDir, "freipadel.db"))
+	storage, err := store.Open(filepath.Join(dataDir, "freipadel.db"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer storage.Close()
+	db := storage.ORM
 
 	switch args[0] {
 	case "list-users":
@@ -51,29 +53,22 @@ func runCLI(args []string) {
 	}
 }
 
-func cliListUsers(db *sql.DB) {
-	rows, err := db.Query(`SELECT id, email, name, is_admin, created_at FROM users ORDER BY id`)
+func cliListUsers(db *gorm.DB) {
+	users, err := store.ListUsers(db)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer rows.Close()
 	fmt.Printf("%-4s %-35s %-20s %-6s %s\n", "ID", "EMAIL", "NAME", "ADMIN", "CREATED")
-	for rows.Next() {
-		var id int64
-		var email, name, created string
-		var isAdmin int
-		if err := rows.Scan(&id, &email, &name, &isAdmin, &created); err != nil {
-			log.Fatal(err)
-		}
+	for _, user := range users {
 		admin := ""
-		if isAdmin == 1 {
+		if user.IsAdmin {
 			admin = "yes"
 		}
-		fmt.Printf("%-4d %-35s %-20s %-6s %s\n", id, email, name, admin, created)
+		fmt.Printf("%-4d %-35s %-20s %-6s %s\n", user.ID, user.Email, user.Name, admin, user.CreatedAt)
 	}
 }
 
-func cliResetPassword(db *sql.DB, email, password string) {
+func cliResetPassword(db *gorm.DB, email, password string) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if len(password) < 8 {
 		log.Fatal("password must be at least 8 characters")
@@ -82,25 +77,25 @@ func cliResetPassword(db *sql.DB, email, password string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	res, err := db.Exec(`UPDATE users SET password_hash = ? WHERE email = ?`, string(hash), email)
+	affected, err := store.UpdatePassword(db, email, string(hash))
 	if err != nil {
 		log.Fatal(err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if affected == 0 {
 		log.Fatalf("no account with email %q — try `freipadel list-users`", email)
 	}
 	// Invalidate existing sessions so only the new password works.
-	_, _ = db.Exec(`DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)`, email)
+	_ = store.DeleteSessionsForUserEmail(db, email)
 	fmt.Printf("password reset for %s — all their sessions were logged out\n", email)
 }
 
-func cliPromoteAdmin(db *sql.DB, email string) {
+func cliPromoteAdmin(db *gorm.DB, email string) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	res, err := db.Exec(`UPDATE users SET is_admin = 1 WHERE email = ?`, email)
+	affected, err := store.PromoteAdmin(db, email)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if affected == 0 {
 		log.Fatalf("no account with email %q — try `freipadel list-users`", email)
 	}
 	fmt.Printf("%s is now an admin\n", email)
