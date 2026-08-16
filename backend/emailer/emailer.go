@@ -32,20 +32,21 @@ type Emailer struct {
 	username string
 	password string
 	from     string // envelope + header sender; defaults to username
+	startls  string
 	enabled  bool
 }
 
 // NewSender builds an Emailer from explicit SMTP settings. If port is empty it
 // defaults to 587 (submission + STARTTLS); if from is empty it falls back to
 // username.
-func NewSender(host, port, username, password, from string, enabled bool) *Emailer {
+func NewSender(host, port, username, password, from, startls string, enabled bool) *Emailer {
 	if port == "" {
 		port = "587"
 	}
 	if from == "" {
 		from = username
 	}
-	return &Emailer{host: host, port: port, username: username, password: password, from: from, enabled: enabled}
+	return &Emailer{host: host, port: port, username: username, password: password, from: from, startls: startls, enabled: enabled}
 }
 
 // FromEnv builds an Emailer from the SMTP_* / MAIL_FROM environment variables.
@@ -57,10 +58,12 @@ func FromEnv() *Emailer {
 			os.Getenv("SMTP_USER"),
 			os.Getenv("SMTP_PASS"),
 			os.Getenv("MAIL_FROM"),
+			os.Getenv("STARTTLS"),
 			true,
 		)
 	} else {
 		return NewSender(
+			"",
 			"",
 			"",
 			"",
@@ -73,7 +76,7 @@ func FromEnv() *Emailer {
 
 // Configured reports whether enough SMTP settings are present to send mail.
 func (e *Emailer) Configured() bool {
-	return e.host != "" && e.username != "" && e.password != "" && e.enabled
+	return e.host != "" && e.enabled
 }
 
 // Send delivers a plain-text UTF-8 email. Like the telegram sender, it is a
@@ -163,7 +166,7 @@ func (e *Emailer) sendSMTP(to string, msg []byte) error {
 	}
 	defer c.Close()
 
-	if e.port != "465" {
+	if e.startls == "1" {
 		ok, _ := c.Extension("STARTTLS")
 		if !ok {
 			return fmt.Errorf("smtp server does not advertise STARTTLS")
@@ -174,8 +177,14 @@ func (e *Emailer) sendSMTP(to string, msg []byte) error {
 		}
 	}
 
-	if err := c.Auth(smtp.PlainAuth("", e.username, e.password, e.host)); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+	if e.username != "" || e.password != "" {
+		if e.username == "" || e.password == "" {
+			return fmt.Errorf("SMTP_USER and SMTP_PASS must either both be set or both be empty")
+		}
+
+		if err := c.Auth(smtp.PlainAuth("", e.username, e.password, e.host)); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
 	}
 	if err := c.Mail(e.from); err != nil {
 		return fmt.Errorf("smtp mail from: %w", err)
