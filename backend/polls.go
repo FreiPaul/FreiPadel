@@ -3,12 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"freipadel/internal/store"
+
 	"gorm.io/gorm"
 )
 
@@ -147,6 +149,7 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 
 // POST /api/polls — start a new slot poll from a selection of slot groups.
 func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) {
+
 	var req struct {
 		Title string `json:"title"`
 		Slots []struct {
@@ -193,6 +196,7 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		}
 	}
 	var pollID int64
+
 	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		var err error
 		pollID, err = store.CreatePoll(tx, u.ID, req.Title, slots)
@@ -211,10 +215,50 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		return
 	}
 	a.hub.notify()
-	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
 
 	// notify admin via telegram
 	a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("New FreiPadel Poll from ", u.Name))
+	err = a.notifyOnNewPoll()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, fmt.Sprintf("Error happenedf: %s", err))
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
+}
+
+func (a *App) notifyOnNewPoll() error {
+	var usersToNotify []store.UserRecord
+	allUsers, err := store.ListUsers(a.store.ORM)
+	if err != nil {
+		return err
+	}
+
+	for _, u := range allUsers {
+		userNotificationsMap := make(map[string]bool)
+		userSettings, err := store.FindSettings(a.store.ORM, u.ID)
+		if err != nil {
+			return err
+		}
+		err = json.Unmarshal([]byte(userSettings.Notifications), &userNotificationsMap)
+		if err != nil {
+			return err
+		}
+		// fmt.Printf("ID: %d, Mail: %s, notification: %s \n", u.ID, u.Email, userNotificationsMap)
+
+		if userNotificationsMap["poll_created"] {
+			usersToNotify = append(usersToNotify, u)
+			fmt.Printf("send to: %s\n", u.Email)
+			if err := a.emailer.Send(
+				u.Email,
+				"New Padel Poll",
+				"<h1>New padel poll created</h1>",
+			); err != nil {
+				log.Printf("email send failed: %v", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // POST /api/polls/{id}/vote — cast or change a yes/no vote on one poll slot.
