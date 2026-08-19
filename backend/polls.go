@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"strconv"
@@ -151,8 +152,9 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) {
 
 	var req struct {
-		Title string `json:"title"`
-		Slots []struct {
+		Title  string `json:"title"`
+		Origin string `json:"origin"`
+		Slots  []struct {
 			Date            string   `json:"date"`
 			Time            string   `json:"time"`
 			DurationMinutes int      `json:"duration_minutes"`
@@ -218,7 +220,7 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 
 	// notify admin via telegram
 	a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("New FreiPadel Poll from ", u.Name))
-	err = a.notifyOnNewPoll()
+	err = a.notifyOnNewPoll(req.Origin)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, fmt.Sprintf("Error happenedf: %s", err))
 	}
@@ -226,8 +228,7 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
 }
 
-func (a *App) notifyOnNewPoll() error {
-	var usersToNotify []store.UserRecord
+func (a *App) notifyOnNewPoll(origin string) error {
 	allUsers, err := store.ListUsers(a.store.ORM)
 	if err != nil {
 		return err
@@ -246,12 +247,21 @@ func (a *App) notifyOnNewPoll() error {
 		// fmt.Printf("ID: %d, Mail: %s, notification: %s \n", u.ID, u.Email, userNotificationsMap)
 
 		if userNotificationsMap["poll_created"] {
-			usersToNotify = append(usersToNotify, u)
 			fmt.Printf("send to: %s\n", u.Email)
+			link := template.HTMLEscapeString(strings.TrimRight(strings.TrimSpace(origin), "/")) + "/polls"
+			body := fmt.Sprintf(`
+<div style="background:#f5f7fa;padding:32px 16px;font-family:Arial,sans-serif;color:#17202a;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:32px;">
+    <h1 style="margin:0 0 16px;font-size:24px;line-height:1.3;color:#0f172a;">A new padel poll is ready</h1>
+    <p style="margin:0 0 24px;font-size:16px;line-height:1.6;color:#475569;">Someone started a new poll on FreiPadel. Add your availability so the group can find a time that works.</p>
+    <p style="margin:0 0 24px;text-align:center;"><a href="%s" style="display:inline-block;background:#0f766e;color:#ffffff;border-radius:8px;padding:12px 20px;text-decoration:none;font-weight:600;">View the poll</a></p>
+    <p style="margin:0;font-size:13px;line-height:1.5;color:#64748b;">You can also open FreiPadel here: <a href="%s" style="color:#0f766e;">%s</a></p>
+  </div>
+</div>`, link, link, link)
 			if err := a.emailer.Send(
 				u.Email,
 				"New Padel Poll",
-				"<h1>New padel poll created</h1>",
+				body,
 			); err != nil {
 				log.Printf("email send failed: %v", err)
 			}

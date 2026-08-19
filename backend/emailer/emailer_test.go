@@ -13,6 +13,7 @@ func TestSendEmail(t *testing.T) {
 		os.Getenv("SMTP_USER"),
 		os.Getenv("SMTP_PASS"),
 		os.Getenv("MAIL_FROM"),
+		"",
 		true,
 	)
 
