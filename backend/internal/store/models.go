@@ -10,7 +10,7 @@ type userModel struct {
 	Name         string `gorm:"column:name;not null"`
 	PasswordHash string `gorm:"column:password_hash;not null"`
 	IsAdmin      bool   `gorm:"column:is_admin;not null;default:false"`
-	CreatedAt    string `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt    string `gorm:"column:created_at;not null;default:(datetime('now'))"`
 }
 
 func (userModel) TableName() string { return "users" }
@@ -27,7 +27,7 @@ func (sessionModel) TableName() string { return "sessions" }
 type inviteModel struct {
 	Token      string     `gorm:"column:token;primaryKey"`
 	CreatedBy  int64      `gorm:"column:created_by;not null"`
-	CreatedAt  string     `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt  string     `gorm:"column:created_at;not null;default:(datetime('now'))"`
 	UsedBy     *int64     `gorm:"column:used_by"`
 	UsedAt     *string    `gorm:"column:used_at"`
 	Email      *string    `gorm:"column:email"`
@@ -79,7 +79,7 @@ type pollModel struct {
 	Title         string    `gorm:"column:title;not null"`
 	Status        string    `gorm:"column:status;not null;default:active"`
 	WinningSlotID *int64    `gorm:"column:winning_slot_id"`
-	CreatedAt     string    `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt     string    `gorm:"column:created_at;not null;default:(datetime('now'))"`
 	ClosedAt      *string   `gorm:"column:closed_at"`
 	Creator       userModel `gorm:"foreignKey:CreatorID;references:ID"`
 }
@@ -105,7 +105,7 @@ type voteModel struct {
 	PollSlotID int64     `gorm:"column:poll_slot_id;primaryKey"`
 	UserID     int64     `gorm:"column:user_id;primaryKey"`
 	Vote       bool      `gorm:"column:vote;not null"`
-	UpdatedAt  string    `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt  string    `gorm:"column:updated_at;not null;default:(datetime('now'))"`
 	User       userModel `gorm:"foreignKey:UserID;references:ID"`
 }
 
@@ -118,7 +118,7 @@ type syncLogModel struct {
 	Action    string  `gorm:"column:action;not null"`
 	Payload   *string `gorm:"column:payload"`
 	VisibleTo *int64  `gorm:"column:visible_to"`
-	CreatedAt string  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt string  `gorm:"column:created_at;not null;default:(datetime('now'))"`
 }
 
 func (syncLogModel) TableName() string { return "sync_log" }
