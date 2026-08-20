@@ -156,16 +156,18 @@ func ListInvites(db *gorm.DB) ([]InviteRecord, error) {
 	return invites, nil
 }
 
+// UserOrInviteEmailExists reports whether email already belongs to an account or
+// to an outstanding invite.
 func UserOrInviteEmailExists(db *gorm.DB, email string) (bool, error) {
 	var userCount int64
-	if err := db.Model(&userModel{}).Where(&userModel{Email: email}).Count(&userCount).Error; err != nil {
+	if err := db.Model(&userModel{}).Where("email = ?", email).Count(&userCount).Error; err != nil {
 		return false, err
 	}
 	if userCount != 0 {
 		return true, nil
 	}
 	var inviteCount int64
-	if err := db.Model(&inviteModel{}).Where(&inviteModel{Email: &email}).Count(&inviteCount).Error; err != nil {
+	if err := db.Model(&inviteModel{}).Where("email = ?", email).Count(&inviteCount).Error; err != nil {
 		return false, err
 	}
 	return inviteCount != 0, nil
