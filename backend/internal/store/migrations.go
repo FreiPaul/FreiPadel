@@ -155,6 +155,33 @@ var schemaMigrations = []schemaMigration{
 				`ALTER TABLE invites ADD COLUMN email TEXT`)
 		},
 	},
+	{
+		Version: 4,
+		Name:    "repair literal CURRENT_TIMESTAMP values",
+		Up: func(tx *sql.Tx) error {
+			// These columns are typed string, so GORM inlined the old
+			// default:CURRENT_TIMESTAMP tag as literal text instead of deferring to
+			// SQLite's column default. The original times are unrecoverable; "now"
+			// restores ordering and lets stranded sync_log rows expire.
+			repairs := []struct{ table, column string }{
+				{"users", "created_at"},
+				{"invites", "created_at"},
+				{"polls", "created_at"},
+				{"sync_log", "created_at"},
+				{"votes", "updated_at"},
+			}
+			for _, repair := range repairs {
+				statement := fmt.Sprintf(
+					`UPDATE %s SET %s = datetime('now') WHERE %s = 'CURRENT_TIMESTAMP'`,
+					repair.table, repair.column, repair.column,
+				)
+				if _, err := tx.Exec(statement); err != nil {
+					return fmt.Errorf("repair %s.%s: %w", repair.table, repair.column, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 var latestSchemaVersion = schemaMigrations[len(schemaMigrations)-1].Version
