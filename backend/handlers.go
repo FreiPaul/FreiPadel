@@ -343,20 +343,30 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 
-	// check wether email is already present in db
-	exists, err := store.UserOrInviteEmailExists(a.orm.WithContext(r.Context()), req.Email)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
+	// An email invite is addressed to one person, so refuse to issue a second one
+	// for an address that already has an account or an outstanding invite. Single
+	// and group invites carry no address, so there is nothing to collide on.
+	if req.Kind == "email" {
+		exists, err := store.UserOrInviteEmailExists(a.orm.WithContext(r.Context()), req.Email)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if exists {
+			httpError(w, http.StatusConflict, "user/invite with email already exists")
+			return
+		}
 	}
-	if exists {
-		httpError(w, http.StatusConflict, "user/invite with email already exists")
-		return
+
+	// Only email invites carry an address; the rest store NULL
+	var inviteEmail *string
+	if req.Kind == "email" {
+		inviteEmail = &req.Email
 	}
 
 	token := randomToken(16)
-	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := store.CreateInvite(tx, token, u.ID, req.Kind, &req.Email); err != nil {
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := store.CreateInvite(tx, token, u.ID, req.Kind, inviteEmail); err != nil {
 			return err
 		}
 		inv, err := store.FindInvite(tx, token)
