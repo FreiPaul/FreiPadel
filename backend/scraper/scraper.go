@@ -67,6 +67,12 @@ func (w Window) Dates() []string {
 	return dates
 }
 
+// NormalizeLocationName returns the canonical form of a venue name: surrounding
+// whitespace trimmed and internal whitespace runs collapsed to single spaces.
+func NormalizeLocationName(name string) string {
+	return strings.Join(strings.Fields(name), " ")
+}
+
 // Keep reports whether a slot falls inside the start-time band and is not a
 // "single" court. Sources call this so filtering stays consistent across vendors.
 func (w Window) Keep(s Slot) bool {
@@ -237,6 +243,11 @@ func (s *Scraper) Fetch(ctx context.Context) ([]Slot, error) {
 			lastErr = err
 			failures++
 			continue
+		}
+		// Canonicalize here rather than in each source, so a connector cannot
+		// forget and desync a venue name from the saved location filters.
+		for i := range slots {
+			slots[i].Location = NormalizeLocationName(slots[i].Location)
 		}
 		all = append(all, slots...)
 	}
