@@ -441,23 +441,15 @@ func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSl
 		return fmt.Errorf("winning slot %d not found in poll %d", winningSlotID, poll.ID)
 	}
 
-	pollSlotIDs := map[int64]bool{}
-	for _, s := range slots {
-		pollSlotIDs[s.ID] = true
-	}
-
 	// Who to tell: everyone who cast a vote in this poll. Of those, the ones
 	// who voted yes on the winning slot are actually playing.
-	votes, err := store.ListVotes(a.store.ORM)
+	votes, err := store.ListVotesForPoll(a.store.ORM, poll.ID)
 	if err != nil {
 		return err
 	}
 	voted := map[int64]bool{}
 	playing := map[int64]bool{}
 	for _, v := range votes {
-		if !pollSlotIDs[v.PollSlotID] {
-			continue
-		}
 		voted[v.UserID] = true
 		if v.PollSlotID == winningSlotID && v.Vote {
 			playing[v.UserID] = true
