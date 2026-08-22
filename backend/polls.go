@@ -407,11 +407,12 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// notifyOnSlotBooked emails every user who enabled the "slot_booked"
-// notification once a poll is closed on a winning slot. Users who voted yes on
-// the winning slot get the "see you on court" mail; everyone else is told that
-// a different slot was booked. Mirrors notifyOnNewPoll — best effort, a failed
-// send never fails the request.
+// notifyOnSlotBooked emails the users who voted in this poll and enabled the
+// "slot_booked" notification once the poll is closed on a winning slot. Users
+// who voted yes on the winning slot get the "see you on court" mail; the other
+// voters are told that a different slot was booked. People who never voted in
+// this poll are not mailed at all. Mirrors notifyOnNewPoll — best effort, a
+// failed send never fails the request.
 func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSlotID int64) error {
 	slots, err := store.ListPollSlots(a.store.ORM, &poll.ID)
 	if err != nil {
@@ -428,13 +429,24 @@ func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSl
 		return fmt.Errorf("winning slot %d not found in poll %d", winningSlotID, poll.ID)
 	}
 
-	// Who is actually playing: everyone who voted yes on the winning slot.
+	pollSlotIDs := map[int64]bool{}
+	for _, s := range slots {
+		pollSlotIDs[s.ID] = true
+	}
+
+	// Who to tell: everyone who cast a vote in this poll. Of those, the ones
+	// who voted yes on the winning slot are actually playing.
 	votes, err := store.ListVotes(a.store.ORM)
 	if err != nil {
 		return err
 	}
+	voted := map[int64]bool{}
 	playing := map[int64]bool{}
 	for _, v := range votes {
+		if !pollSlotIDs[v.PollSlotID] {
+			continue
+		}
+		voted[v.UserID] = true
 		if v.PollSlotID == winningSlotID && v.Vote {
 			playing[v.UserID] = true
 		}
@@ -452,8 +464,7 @@ func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSl
 	title := template.HTMLEscapeString(poll.Title)
 
 	for _, u := range allUsers {
-		if a.wantsNotification(u.ID, "slot_booked") {
-			fmt.Printf("send to: %s\n", u.Email)
+		if voted[u.ID] && a.wantsNotification(u.ID, "slot_booked") {
 			subject, headline, intro := "Padel Slot Booked",
 				"A padel slot has been booked",
 				fmt.Sprintf("The poll \u201c%s\u201d is closed and your slot was picked. See you on court!", title)
