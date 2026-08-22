@@ -75,7 +75,11 @@
                 min_price: s.min_price,
                 currency: s.currency,
             }));
-            await api.post("/api/polls", { title: pollTitle, slots });
+            await api.post("/api/polls", {
+                title: pollTitle,
+                slots,
+                origin: location.origin,
+            });
             toast.success("Slot poll started!");
             selecting = false;
             selected = {};

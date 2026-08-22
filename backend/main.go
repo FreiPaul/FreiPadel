@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,6 +32,9 @@ type App struct {
 	scraper       *scraper.Scraper
 	tz            *time.Location
 	secureCookies bool
+	// publicOrigin is the canonical base URL of this deployment (PUBLIC_ORIGIN),
+	// without a trailing slash. Empty means "not configured".
+	publicOrigin string
 
 	mu         sync.Mutex
 	scraping   bool
@@ -38,7 +43,46 @@ type App struct {
 	hub *syncHub
 
 	telegramSender telegram.TelegramSender
-	emailer        *emailer.Emailer
+	emailer        mailSender
+}
+
+type mailSender interface {
+	Configured() bool
+	Send(to, subject, body string) error
+}
+
+// parsePublicOrigin validates PUBLIC_ORIGIN and strips any trailing slash. It
+// must be an absolute http(s) URL with a host, e.g.
+// "https://freipadel.example.com" — a malformed value is a deployment mistake
+// worth failing loudly on rather than mailing broken links to everyone.
+func parsePublicOrigin(raw string) (string, error) {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("want an absolute http(s) URL, got %q", raw)
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("want scheme + host only, got %q", raw)
+	}
+	return u.String(), nil
+}
+
+// linkOrigin resolves the base URL for links in outgoing email. A configured
+// PUBLIC_ORIGIN always wins: the origin in the request body is supplied by the
+// client, and these links are mailed to every user, so an attacker-controlled
+// value would turn the notification fan-out into a phishing channel. Without
+// PUBLIC_ORIGIN the request value is used as before.
+func (a *App) linkOrigin(requestOrigin string) string {
+	if a.publicOrigin != "" {
+		return a.publicOrigin
+	}
+	return strings.TrimRight(strings.TrimSpace(requestOrigin), "/")
 }
 
 func envOr(key, fallback string) string {
@@ -90,6 +134,14 @@ func main() {
 		log.Fatalf("init scraper: %v", err)
 	}
 
+	publicOrigin, err := parsePublicOrigin(os.Getenv("PUBLIC_ORIGIN"))
+	if err != nil {
+		log.Fatalf("parse PUBLIC_ORIGIN: %v", err)
+	}
+	if publicOrigin != "" {
+		log.Printf("email links use PUBLIC_ORIGIN %s", publicOrigin)
+	}
+
 	app := &App{
 		store:          storage,
 		orm:            storage.ORM,
@@ -97,13 +149,14 @@ func main() {
 		scraper:        scr,
 		tz:             tz,
 		secureCookies:  os.Getenv("COOKIE_SECURE") == "1",
+		publicOrigin:   publicOrigin,
 		telegramSender: *telegram.NewSender(scrapeCfg.Telegram.BotToken),
 		emailer:        emailer.FromEnv(),
 	}
 	if app.emailer.Configured() {
 		log.Printf("SMTP emailer configured")
 	} else {
-		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS and EMAILER_ENABLED=\"1\")")
+		log.Printf("SMTP emailer not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS/MAIL_FROM and EMAILER_ENABLED=\"1\")")
 	}
 	app.hub = newSyncHub(storage.ORM)
 
@@ -118,6 +171,7 @@ func main() {
 	go func() {
 		for {
 			_ = store.DeleteExpiredSessions(storage.ORM)
+			_ = store.DeleteExpiredPendingEmailChanges(storage.ORM)
 			app.compactSyncLog()
 			time.Sleep(time.Hour)
 		}
@@ -131,6 +185,10 @@ func main() {
 	mux.HandleFunc("POST /api/auth/login", app.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", app.handleLogout)
 	mux.HandleFunc("GET /api/auth/me", app.requireAuth(app.handleMe))
+	mux.HandleFunc("GET /api/auth/email-change", app.requireAuth(app.handleGetEmailChange))
+	mux.HandleFunc("POST /api/auth/email-change", app.requireAuth(app.handleRequestEmailChange))
+	mux.HandleFunc("DELETE /api/auth/email-change", app.requireAuth(app.handleCancelEmailChange))
+	mux.HandleFunc("POST /api/auth/email-change/confirm", app.handleConfirmEmailChange)
 
 	// Settings
 	mux.HandleFunc("GET /api/settings", app.requireAuth(app.handleGetSettings))

@@ -12,6 +12,7 @@ import (
 
 	"freipadel/internal/store"
 	"freipadel/scraper"
+
 	"gorm.io/gorm"
 )
 
@@ -32,8 +33,8 @@ type Settings struct {
 // no schema change or backfill is needed — mergeNotifications fills it in for
 // every user on read.
 var notificationDefaults = map[string]bool{
-	"slot_available": true,
-	"poll_created":   true,
+	"slot_booked":  false,
+	"poll_created": false,
 }
 
 // mergeNotifications overlays a user's stored preferences on top of the
@@ -325,8 +326,9 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	if req.Kind == "" {
 		req.Kind = "single"
 	}
+	req.Origin = a.linkOrigin(req.Origin)
 	if req.Origin == "" {
-		req.Origin = "https://freipadel.freipaul.com/"
+		req.Origin = "https://freipadel.freipaul.com"
 	}
 	if req.Kind != "single" && req.Kind != "group" && req.Kind != "email" {
 		httpError(w, http.StatusBadRequest, "kind must be 'single' or 'group' or 'email'")
@@ -341,6 +343,14 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	if req.Kind == "email" && req.Email == "" {
 		httpError(w, http.StatusBadRequest, "email invite must include an email address")
 		return
+	}
+	if req.Kind == "email" {
+		var err error
+		req.Email, err = normalizeEmail(req.Email)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid email address")
+			return
+		}
 	}
 
 	// An email invite is addressed to one person, so refuse to issue a second one

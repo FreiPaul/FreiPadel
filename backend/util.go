@@ -4,7 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/mail"
+	"strings"
 
 	"freipadel/internal/sessiontoken"
 )
@@ -39,4 +42,15 @@ func randomToken(nBytes int) string {
 
 func hashToken(token string) string {
 	return sessiontoken.Hash(token)
+}
+
+// normalizeEmail keeps the application's existing case-insensitive identity
+// policy in one place and only accepts a bare address, not a display-name form.
+func normalizeEmail(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	address, err := mail.ParseAddress(value)
+	if err != nil || address.Name != "" || address.Address != value {
+		return "", errors.New("invalid email address")
+	}
+	return value, nil
 }

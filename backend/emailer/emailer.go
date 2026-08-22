@@ -1,5 +1,6 @@
 // Package emailer sends transactional emails over SMTP. Credentials come from
-// the environment (SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / MAIL_FROM),
+// the environment (SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / MAIL_FROM /
+// SMTP_INSECURE),
 // set via the .env file for local dev or the Dockerfile/compose environment
 // block in production.
 //
@@ -32,20 +33,22 @@ type Emailer struct {
 	username string
 	password string
 	from     string // envelope + header sender; defaults to username
+	insecure bool   // opt out of STARTTLS on non-465 ports; for local test servers only
 	enabled  bool
 }
 
 // NewSender builds an Emailer from explicit SMTP settings. If port is empty it
 // defaults to 587 (submission + STARTTLS); if from is empty it falls back to
-// username.
-func NewSender(host, port, username, password, from string, enabled bool) *Emailer {
+// username. Transport security is on by default: port 465 dials implicit TLS,
+// every other port requires STARTTLS unless insecure is set.
+func NewSender(host, port, username, password, from string, insecure, enabled bool) *Emailer {
 	if port == "" {
 		port = "587"
 	}
 	if from == "" {
 		from = username
 	}
-	return &Emailer{host: host, port: port, username: username, password: password, from: from, enabled: enabled}
+	return &Emailer{host: host, port: port, username: username, password: password, from: from, insecure: insecure, enabled: enabled}
 }
 
 // FromEnv builds an Emailer from the SMTP_* / MAIL_FROM environment variables.
@@ -57,6 +60,7 @@ func FromEnv() *Emailer {
 			os.Getenv("SMTP_USER"),
 			os.Getenv("SMTP_PASS"),
 			os.Getenv("MAIL_FROM"),
+			os.Getenv("SMTP_INSECURE") == "1",
 			true,
 		)
 	} else {
@@ -67,13 +71,14 @@ func FromEnv() *Emailer {
 			"",
 			"",
 			false,
+			false,
 		)
 	}
 }
 
 // Configured reports whether enough SMTP settings are present to send mail.
 func (e *Emailer) Configured() bool {
-	return e.host != "" && e.username != "" && e.password != "" && e.enabled
+	return e.enabled && e.host != "" && e.from != ""
 }
 
 // Send delivers a plain-text UTF-8 email. Like the telegram sender, it is a
@@ -163,7 +168,7 @@ func (e *Emailer) sendSMTP(to string, msg []byte) error {
 	}
 	defer c.Close()
 
-	if e.port != "465" {
+	if e.port != "465" && !e.insecure {
 		ok, _ := c.Extension("STARTTLS")
 		if !ok {
 			return fmt.Errorf("smtp server does not advertise STARTTLS")
@@ -174,8 +179,14 @@ func (e *Emailer) sendSMTP(to string, msg []byte) error {
 		}
 	}
 
-	if err := c.Auth(smtp.PlainAuth("", e.username, e.password, e.host)); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+	if e.username != "" || e.password != "" {
+		if e.username == "" || e.password == "" {
+			return fmt.Errorf("SMTP_USER and SMTP_PASS must either both be set or both be empty")
+		}
+
+		if err := c.Auth(smtp.PlainAuth("", e.username, e.password, e.host)); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
 	}
 	if err := c.Mail(e.from); err != nil {
 		return fmt.Errorf("smtp mail from: %w", err)

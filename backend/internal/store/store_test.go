@@ -53,14 +53,14 @@ func TestOpenDBCreatesCurrentSchemaAndPragmas(t *testing.T) {
 
 	for _, table := range []string{
 		"users", "sessions", "invites", "user_settings", "slots",
-		"meta", "polls", "poll_slots", "votes", "sync_log",
+		"meta", "polls", "poll_slots", "votes", "sync_log", "pending_email_changes",
 	} {
 		if got := scalarInt(t, db,
 			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table); got != 1 {
 			t.Errorf("table %q count = %d, want 1", table, got)
 		}
 	}
-	for _, index := range []string{"idx_slots_date", "idx_poll_slots_poll"} {
+	for _, index := range []string{"idx_slots_date", "idx_poll_slots_poll", "idx_pending_email_changes_expires_at"} {
 		if got := scalarInt(t, db,
 			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index); got != 1 {
 			t.Errorf("index %q count = %d, want 1", index, got)
