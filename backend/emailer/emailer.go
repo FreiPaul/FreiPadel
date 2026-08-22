@@ -78,7 +78,7 @@ func FromEnv() *Emailer {
 
 // Configured reports whether enough SMTP settings are present to send mail.
 func (e *Emailer) Configured() bool {
-	return e.host != "" && e.enabled
+	return e.enabled && e.host != "" && e.from != ""
 }
 
 // Send delivers a plain-text UTF-8 email. Like the telegram sender, it is a

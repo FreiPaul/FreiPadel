@@ -63,7 +63,7 @@ from both the source archive and Docker build context.
 | `SMTP_PORT`               | `587`      | SMTP submission port                 |
 | `SMTP_USER`               | —          | SMTP authentication username         |
 | `SMTP_PASS`               | —          | SMTP authentication password         |
-| `MAIL_FROM`               | SMTP user  | Sender email address                 |
+| `MAIL_FROM`               | SMTP user  | Sender email address; required (falls back to `SMTP_USER`) or the emailer stays off |
 | `SMTP_INSECURE`           | `0`        | Set `1` to skip STARTTLS (local only) |
 | `TELEGRAM_BOT_TOKEN`      | —          | Telegram bot API token               |
 | `TELEGRAM_ADMIN_CHAT_ID`  | —          | Telegram admin chat ID               |

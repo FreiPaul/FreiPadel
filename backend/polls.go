@@ -220,11 +220,17 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 
 	// notify admin via telegram
 	a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("New FreiPadel Poll from ", u.Name))
-	// A failed notification must not fail the poll: it is already committed
-	// and broadcast over SSE. Same as handleClosePoll.
-	if err := a.notifyOnNewPoll(req.Origin); err != nil {
-		log.Printf("notify on new poll %d: %v", pollID, err)
-	}
+	// Off the request path: the fan-out opens one SMTP connection per opted-in
+	// user (10s dial timeout each), which would otherwise hold the response
+	// open for minutes against a slow mailserver. It uses a.store.ORM rather
+	// than the request context, so it outlives the request safely. A failed
+	// notification must not fail the poll either — it is already committed and
+	// broadcast over SSE.
+	go func() {
+		if err := a.notifyOnNewPoll(req.Origin); err != nil {
+			log.Printf("notify on new poll %d: %v", pollID, err)
+		}
+	}()
 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
 }
@@ -400,9 +406,14 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 	if req.WinningSlotID != nil {
 		// notify admin via telegram
 		a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("FreiPadel slot booked by ", u.Name))
-		if err := a.notifyOnSlotBooked(req.Origin, poll, *req.WinningSlotID); err != nil {
-			log.Printf("slot booked notification failed: %v", err)
-		}
+		// Same as handleCreatePoll: mailing every voter must not block the
+		// response.
+		winningSlotID := *req.WinningSlotID
+		go func() {
+			if err := a.notifyOnSlotBooked(req.Origin, poll, winningSlotID); err != nil {
+				log.Printf("slot booked notification failed: %v", err)
+			}
+		}()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
