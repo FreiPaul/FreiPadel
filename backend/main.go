@@ -38,7 +38,12 @@ type App struct {
 	hub *syncHub
 
 	telegramSender telegram.TelegramSender
-	emailer        *emailer.Emailer
+	emailer        mailSender
+}
+
+type mailSender interface {
+	Configured() bool
+	Send(to, subject, body string) error
 }
 
 func envOr(key, fallback string) string {
@@ -118,6 +123,7 @@ func main() {
 	go func() {
 		for {
 			_ = store.DeleteExpiredSessions(storage.ORM)
+			_ = store.DeleteExpiredPendingEmailChanges(storage.ORM)
 			app.compactSyncLog()
 			time.Sleep(time.Hour)
 		}
@@ -131,6 +137,10 @@ func main() {
 	mux.HandleFunc("POST /api/auth/login", app.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", app.handleLogout)
 	mux.HandleFunc("GET /api/auth/me", app.requireAuth(app.handleMe))
+	mux.HandleFunc("GET /api/auth/email-change", app.requireAuth(app.handleGetEmailChange))
+	mux.HandleFunc("POST /api/auth/email-change", app.requireAuth(app.handleRequestEmailChange))
+	mux.HandleFunc("DELETE /api/auth/email-change", app.requireAuth(app.handleCancelEmailChange))
+	mux.HandleFunc("POST /api/auth/email-change/confirm", app.handleConfirmEmailChange)
 
 	// Settings
 	mux.HandleFunc("GET /api/settings", app.requireAuth(app.handleGetSettings))

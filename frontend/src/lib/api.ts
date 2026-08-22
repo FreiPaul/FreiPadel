@@ -20,6 +20,11 @@ export interface Settings {
 	notifications: Record<string, boolean>; // notification key -> enabled
 }
 
+export interface EmailChangeStatus {
+	pending_email: string | null;
+	expires_at: string | null;
+}
+
 export interface SlotGroup {
 	date: string;
 	weekday: number; // 0=Monday … 6=Sunday

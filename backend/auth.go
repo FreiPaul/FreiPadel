@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
+	"log"
 	"net/http"
-	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +18,10 @@ import (
 )
 
 const (
-	sessionCookie   = "fp_session"
-	sessionLifetime = 30 * 24 * time.Hour
+	sessionCookie       = "fp_session"
+	sessionLifetime     = 30 * 24 * time.Hour
+	emailChangeTTL      = 8 * time.Hour
+	emailChangeCooldown = time.Minute
 )
 
 type User struct {
@@ -111,10 +115,11 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	var err error
+	req.Email, err = normalizeEmail(req.Email)
 	req.Name = strings.TrimSpace(req.Name)
 
-	if _, err := mail.ParseAddress(req.Email); err != nil {
+	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid email address")
 		return
 	}
@@ -167,6 +172,14 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 				responseStatus, responseMessage = http.StatusForbidden, "this invite belongs to another email"
 				return errors.New(responseMessage)
 			}
+		}
+		reserved, err := store.PendingEmailChangeEmailExists(tx, req.Email, 0)
+		if err != nil {
+			return err
+		}
+		if reserved {
+			accountConflict = true
+			return errors.New("email reserved by pending change")
 		}
 
 		created, err = store.CreateUser(tx, req.Email, req.Name, string(hash), firstUser)
@@ -228,7 +241,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	req.Email, _ = normalizeEmail(req.Email)
 
 	record, err := store.FindUserByEmail(a.orm.WithContext(r.Context()), req.Email)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(record.PasswordHash), []byte(req.Password)) != nil {
@@ -274,3 +287,201 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request, u *User) {
 	}
 	writeJSON(w, http.StatusOK, me)
 }
+
+type emailChangeStatus struct {
+	PendingEmail *string `json:"pending_email"`
+	ExpiresAt    *string `json:"expires_at"`
+}
+
+// GET /api/auth/email-change — returns the current user's pending request.
+func (a *App) handleGetEmailChange(w http.ResponseWriter, r *http.Request, u *User) {
+	pending, err := store.FindPendingEmailChangeByUserID(a.orm.WithContext(r.Context()), u.ID)
+	if store.IsNotFound(err) {
+		writeJSON(w, http.StatusOK, emailChangeStatus{})
+		return
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	writeJSON(w, http.StatusOK, emailChangeStatus{
+		PendingEmail: &pending.NewEmail,
+		ExpiresAt:    &pending.ExpiresAt,
+	})
+}
+
+// POST /api/auth/email-change — creates a pending request. Authentication of
+// the current session authorizes the request; the user does not re-enter their
+// password. The account continues to use its current address until confirmed.
+func (a *App) handleRequestEmailChange(w http.ResponseWriter, r *http.Request, u *User) {
+	if !a.emailer.Configured() {
+		httpError(w, http.StatusServiceUnavailable, "email changes are unavailable in this deployment")
+		return
+	}
+
+	var req struct {
+		NewEmail string `json:"new_email"`
+		Origin   string `json:"origin"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	newEmail, err := normalizeEmail(req.NewEmail)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid email address")
+		return
+	}
+	if newEmail == u.Email {
+		httpError(w, http.StatusBadRequest, "this is already your email address")
+		return
+	}
+	origin := strings.TrimRight(strings.TrimSpace(req.Origin), "/")
+	if origin == "" {
+		httpError(w, http.StatusBadRequest, "origin is required")
+		return
+	}
+
+	token := randomToken(32)
+	expires := time.Now().UTC().Add(emailChangeTTL)
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := store.DeleteExpiredPendingEmailChanges(tx); err != nil {
+			return err
+		}
+		if pending, err := store.FindPendingEmailChangeByUserID(tx, u.ID); err == nil {
+			requestedAt, parseErr := time.ParseInLocation("2006-01-02 15:04:05", pending.RequestedAt, time.UTC)
+			if parseErr == nil && requestedAt.Add(emailChangeCooldown).After(time.Now().UTC()) {
+				return errEmailChangeRateLimited
+			}
+		} else if !store.IsNotFound(err) {
+			return err
+		}
+		unavailable, err := store.EmailUnavailable(tx, newEmail, u.ID)
+		if err != nil {
+			return err
+		}
+		if unavailable {
+			return errEmailUnavailable
+		}
+		return store.UpsertPendingEmailChange(tx, u.ID, newEmail, hashToken(token), expires)
+	})
+	if errors.Is(err, errEmailUnavailable) {
+		httpError(w, http.StatusConflict, "this email address is unavailable")
+		return
+	}
+	if errors.Is(err, errEmailChangeRateLimited) {
+		w.Header().Set("Retry-After", "60")
+		httpError(w, http.StatusTooManyRequests, "please wait before requesting another confirmation email")
+		return
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	confirmationURL := origin + "/confirm-email?token=" + url.QueryEscape(token)
+	body := fmt.Sprintf(
+		`<p>A request was made to use this email address for a FreiPadel account.</p>
+<p><a href="%s">Confirm email change</a></p>
+<p>This link expires in 8 hours. If you did not request this, you can ignore this email.</p>`,
+		template.HTMLEscapeString(confirmationURL),
+	)
+	if err := a.emailer.Send(newEmail, "Confirm your new FreiPadel email address", body); err != nil {
+		// Keep the request valid: SMTP may have accepted the message before
+		// reporting an error, and a subsequent request will rotate the token.
+		log.Printf("send email-change confirmation for user %d: %v", u.ID, err)
+		httpError(w, http.StatusBadGateway, "could not send confirmation email")
+		return
+	}
+
+	oldAddressBody := fmt.Sprintf(
+		`<p>A request was made to change your FreiPadel email address to %s.</p>
+<p>Your account still uses this address until the new address is confirmed. If you did not request this, contact an administrator.</p>`,
+		template.HTMLEscapeString(newEmail),
+	)
+	if err := a.emailer.Send(u.Email, "FreiPadel email change requested", oldAddressBody); err != nil {
+		log.Printf("send email-change notice for user %d: %v", u.ID, err)
+	}
+
+	writeJSON(w, http.StatusAccepted, emailChangeStatus{
+		PendingEmail: &newEmail,
+		ExpiresAt:    stringPointer(expires.Format("2006-01-02 15:04:05")),
+	})
+}
+
+// DELETE /api/auth/email-change — cancels the current user's pending request.
+func (a *App) handleCancelEmailChange(w http.ResponseWriter, r *http.Request, u *User) {
+	if err := store.DeletePendingEmailChangeForUser(a.orm.WithContext(r.Context()), u.ID); err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// POST /api/auth/email-change/confirm — consumes a token received at the new
+// address. This route is public so the link works on a different device.
+func (a *App) handleConfirmEmailChange(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Token == "" {
+		httpError(w, http.StatusBadRequest, "invalid or expired confirmation link")
+		return
+	}
+
+	var changedEmail string
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		tokenHash := hashToken(req.Token)
+		pending, err := store.FindPendingEmailChangeByTokenHash(tx, tokenHash)
+		if store.IsNotFound(err) {
+			return errInvalidEmailChangeToken
+		}
+		if err != nil {
+			return err
+		}
+		expires, err := time.ParseInLocation("2006-01-02 15:04:05", pending.ExpiresAt, time.UTC)
+		if err != nil || !expires.After(time.Now().UTC()) {
+			return errInvalidEmailChangeToken
+		}
+		unavailable, err := store.EmailUnavailable(tx, pending.NewEmail, pending.UserID)
+		if err != nil {
+			return err
+		}
+		if unavailable {
+			return errEmailUnavailable
+		}
+		if affected, err := store.UpdateUserEmail(tx, pending.UserID, pending.NewEmail); err != nil {
+			return err
+		} else if affected != 1 {
+			return errInvalidEmailChangeToken
+		}
+		if err := store.DeletePendingEmailChangeByTokenHash(tx, tokenHash); err != nil {
+			return err
+		}
+		changedEmail = pending.NewEmail
+		return nil
+	})
+	if errors.Is(err, errInvalidEmailChangeToken) {
+		httpError(w, http.StatusBadRequest, "invalid or expired confirmation link")
+		return
+	}
+	if errors.Is(err, errEmailUnavailable) {
+		httpError(w, http.StatusConflict, "this email address is no longer available")
+		return
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "email": changedEmail})
+}
+
+var (
+	errEmailUnavailable        = errors.New("email unavailable")
+	errEmailChangeRateLimited  = errors.New("email change rate limited")
+	errInvalidEmailChangeToken = errors.New("invalid email change token")
+)
+
+func stringPointer(value string) *string { return &value }

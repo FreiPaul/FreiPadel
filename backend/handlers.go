@@ -343,6 +343,14 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 		httpError(w, http.StatusBadRequest, "email invite must include an email address")
 		return
 	}
+	if req.Kind == "email" {
+		var err error
+		req.Email, err = normalizeEmail(req.Email)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid email address")
+			return
+		}
+	}
 
 	// An email invite is addressed to one person, so refuse to issue a second one
 	// for an address that already has an account or an outstanding invite. Single

@@ -27,3 +27,4 @@ backend/scraper/testdata/
 .DS_Store
 
 *.env
+.aider*
