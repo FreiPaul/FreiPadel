@@ -317,7 +317,8 @@
             <Dialog.Title>Close “{closeTarget?.title}”</Dialog.Title>
             <Dialog.Description>
                 Optionally pick the slot you are going to book. Don't forget to
-                actually book the court!
+                actually book the court! People, who voted, will be notified if
+                they enabled notifications in their settings.
             </Dialog.Description>
         </Dialog.Header>
         <div class="flex flex-col gap-2">
