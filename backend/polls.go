@@ -228,6 +228,28 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
 }
 
+// wantsNotification reports whether a user opted into the given notification
+// key. A missing settings row (older account that never saved settings) or
+// unreadable JSON counts as "not opted in" rather than an error: one broken
+// user must never stop the mails going out to everyone else. Reading through
+// mergeNotifications keeps this consistent with GET/PUT /api/settings —
+// unknown keys are ignored, absent ones fall back to the default.
+func (a *App) wantsNotification(userID int64, key string) bool {
+	settings, err := store.FindSettings(a.store.ORM, userID)
+	if err != nil {
+		if !store.IsNotFound(err) {
+			log.Printf("notification settings for user %d: %v", userID, err)
+		}
+		return notificationDefaults[key]
+	}
+	var stored map[string]bool
+	if err := json.Unmarshal([]byte(settings.Notifications), &stored); err != nil {
+		log.Printf("notification settings for user %d: %v", userID, err)
+		return notificationDefaults[key]
+	}
+	return mergeNotifications(stored)[key]
+}
+
 func (a *App) notifyOnNewPoll(origin string) error {
 	allUsers, err := store.ListUsers(a.store.ORM)
 	if err != nil {
@@ -235,18 +257,7 @@ func (a *App) notifyOnNewPoll(origin string) error {
 	}
 
 	for _, u := range allUsers {
-		userNotificationsMap := make(map[string]bool)
-		userSettings, err := store.FindSettings(a.store.ORM, u.ID)
-		if err != nil {
-			return err
-		}
-		err = json.Unmarshal([]byte(userSettings.Notifications), &userNotificationsMap)
-		if err != nil {
-			return err
-		}
-		// fmt.Printf("ID: %d, Mail: %s, notification: %s \n", u.ID, u.Email, userNotificationsMap)
-
-		if userNotificationsMap["poll_created"] {
+		if a.wantsNotification(u.ID, "poll_created") {
 			fmt.Printf("send to: %s\n", u.Email)
 			link := template.HTMLEscapeString(strings.TrimRight(strings.TrimSpace(origin), "/")) + "/polls"
 			body := fmt.Sprintf(`
@@ -331,6 +342,7 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 	}
 	var req struct {
 		WinningSlotID *int64 `json:"winning_slot_id"`
+		Origin        string `json:"origin"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -381,7 +393,113 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 		return
 	}
 	a.hub.notify()
+
+	// A closed poll with a winner means that slot got booked — tell everyone
+	// who asked to hear about it.
+	if req.WinningSlotID != nil {
+		// notify admin via telegram
+		a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("FreiPadel slot booked by ", u.Name))
+		if err := a.notifyOnSlotBooked(req.Origin, poll, *req.WinningSlotID); err != nil {
+			log.Printf("slot booked notification failed: %v", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// notifyOnSlotBooked emails every user who enabled the "slot_booked"
+// notification once a poll is closed on a winning slot. Users who voted yes on
+// the winning slot get the "see you on court" mail; everyone else is told that
+// a different slot was booked. Mirrors notifyOnNewPoll — best effort, a failed
+// send never fails the request.
+func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSlotID int64) error {
+	slots, err := store.ListPollSlots(a.store.ORM, &poll.ID)
+	if err != nil {
+		return err
+	}
+	var winner store.PollSlotRecord
+	for _, s := range slots {
+		if s.ID == winningSlotID {
+			winner = s
+			break
+		}
+	}
+	if winner.ID == 0 {
+		return fmt.Errorf("winning slot %d not found in poll %d", winningSlotID, poll.ID)
+	}
+
+	// Who is actually playing: everyone who voted yes on the winning slot.
+	votes, err := store.ListVotes(a.store.ORM)
+	if err != nil {
+		return err
+	}
+	playing := map[int64]bool{}
+	for _, v := range votes {
+		if v.PollSlotID == winningSlotID && v.Vote {
+			playing[v.UserID] = true
+		}
+	}
+
+	allUsers, err := store.ListUsers(a.store.ORM)
+	if err != nil {
+		return err
+	}
+
+	link := template.HTMLEscapeString(strings.TrimRight(strings.TrimSpace(origin), "/")) + "/polls"
+	when := template.HTMLEscapeString(formatSlotWhen(winner))
+	// Location only — the concrete court is not worth mailing out.
+	where := template.HTMLEscapeString(winner.Location)
+	title := template.HTMLEscapeString(poll.Title)
+
+	for _, u := range allUsers {
+		if a.wantsNotification(u.ID, "slot_booked") {
+			fmt.Printf("send to: %s\n", u.Email)
+			subject, headline, intro := "Padel Slot Booked",
+				"A padel slot has been booked",
+				fmt.Sprintf("The poll \u201c%s\u201d is closed and your slot was picked. See you on court!", title)
+			if !playing[u.ID] {
+				subject, headline, intro = "Another Padel Slot Was Booked",
+					"Another padel slot was booked",
+					fmt.Sprintf("The poll \u201c%s\u201d is closed. A slot you did not vote for was booked, so you are not on the list for this one.", title)
+			}
+			body := fmt.Sprintf(`
+<div style="background:#f5f7fa;padding:32px 16px;font-family:Arial,sans-serif;color:#17202a;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:32px;">
+    <h1 style="margin:0 0 16px;font-size:24px;line-height:1.3;color:#0f172a;">%s</h1>
+    <p style="margin:0 0 24px;font-size:16px;line-height:1.6;color:#475569;">%s</p>
+    <table style="margin:0 0 24px;font-size:16px;line-height:1.6;color:#0f172a;">
+      <tr><td style="padding:0 16px 4px 0;color:#64748b;">When</td><td style="padding:0 0 4px;font-weight:600;">%s</td></tr>
+      <tr><td style="padding:0 16px 4px 0;color:#64748b;">Where</td><td style="padding:0 0 4px;font-weight:600;">%s</td></tr>
+    </table>
+    <p style="margin:0 0 24px;text-align:center;"><a href="%s" style="display:inline-block;background:#0f766e;color:#ffffff;border-radius:8px;padding:12px 20px;text-decoration:none;font-weight:600;">View the poll</a></p>
+    <p style="margin:0;font-size:13px;line-height:1.5;color:#64748b;">You can also open FreiPadel here: <a href="%s" style="color:#0f766e;">%s</a></p>
+  </div>
+</div>`, headline, intro, when, where, link, link, link)
+			if err := a.emailer.Send(
+				u.Email,
+				subject,
+				body,
+			); err != nil {
+				log.Printf("email send failed: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// formatSlotWhen renders a poll slot as a human-readable date/time range,
+// falling back to the raw values if the stored date can't be parsed.
+func formatSlotWhen(s store.PollSlotRecord) string {
+	day := s.Date
+	if d, err := time.Parse("2006-01-02", s.Date); err == nil {
+		day = d.Format("Mon, 2 Jan 2006")
+	}
+	if start, err := time.Parse("15:04", s.Time); err == nil && s.DurationMinutes > 0 {
+		end := start.Add(time.Duration(s.DurationMinutes) * time.Minute)
+		return fmt.Sprintf("%s, %s–%s (%d min)", day, s.Time, end.Format("15:04"), s.DurationMinutes)
+	}
+	return fmt.Sprintf("%s, %s", day, s.Time)
 }
 
 // DELETE /api/polls/{id} — poll owner or admin.

@@ -353,6 +353,7 @@ export async function closePoll(
 ): Promise<void> {
   await api.post(`/api/polls/${pollId}/close`, {
     winning_slot_id: winningSlotId,
+    origin: location.origin,
   });
   const p = sync.polls[pollId];
   if (p) {
