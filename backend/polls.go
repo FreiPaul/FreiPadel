@@ -260,7 +260,7 @@ func (a *App) notifyOnNewPoll(origin string) error {
 	for _, u := range allUsers {
 		if a.wantsNotification(u.ID, "poll_created") {
 			fmt.Printf("send to: %s\n", u.Email)
-			link := template.HTMLEscapeString(strings.TrimRight(strings.TrimSpace(origin), "/")) + "/polls"
+			link := template.HTMLEscapeString(a.linkOrigin(origin)) + "/polls"
 			body := fmt.Sprintf(`
 <div style="background:#f5f7fa;padding:32px 16px;font-family:Arial,sans-serif;color:#17202a;">
   <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:32px;">
@@ -458,7 +458,7 @@ func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSl
 		return err
 	}
 
-	link := template.HTMLEscapeString(strings.TrimRight(strings.TrimSpace(origin), "/")) + "/polls"
+	link := template.HTMLEscapeString(a.linkOrigin(origin)) + "/polls"
 	when := template.HTMLEscapeString(formatSlotWhen(winner))
 	// Location only — the concrete court is not worth mailing out.
 	where := template.HTMLEscapeString(winner.Location)

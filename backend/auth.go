@@ -335,7 +335,7 @@ func (a *App) handleRequestEmailChange(w http.ResponseWriter, r *http.Request, u
 		httpError(w, http.StatusBadRequest, "this is already your email address")
 		return
 	}
-	origin := strings.TrimRight(strings.TrimSpace(req.Origin), "/")
+	origin := a.linkOrigin(req.Origin)
 	if origin == "" {
 		httpError(w, http.StatusBadRequest, "origin is required")
 		return

@@ -326,8 +326,9 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	if req.Kind == "" {
 		req.Kind = "single"
 	}
+	req.Origin = a.linkOrigin(req.Origin)
 	if req.Origin == "" {
-		req.Origin = "https://freipadel.freipaul.com/"
+		req.Origin = "https://freipadel.freipaul.com"
 	}
 	if req.Kind != "single" && req.Kind != "group" && req.Kind != "email" {
 		httpError(w, http.StatusBadRequest, "kind must be 'single' or 'group' or 'email'")

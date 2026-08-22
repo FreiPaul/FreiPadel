@@ -27,6 +27,13 @@ config live in `./data/` (created on first start).
   window, timezone) and restart the container.
 - Serving over HTTPS behind a reverse proxy? Set `COOKIE_SECURE: "1"` in
   `docker-compose.yml`.
+- **Email links**: set `PUBLIC_ORIGIN` to the deployment's canonical base URL
+  (scheme + host, no trailing path). Links in poll notifications, email invites
+  and email-change confirmations are then always built from it, ignoring the
+  `origin` the browser sends — otherwise any logged-in user could have mail with
+  a link of their choosing sent to everyone. Left unset, the client-supplied
+  origin is used, which is fine for local development. A malformed value stops
+  the server at startup.
 
 ## Production deployment
 
@@ -50,6 +57,7 @@ from both the source archive and Docker build context.
 | `STATIC_DIR`              | `./static` | Built frontend to serve              |
 | `SCRAPE_INTERVAL_MINUTES` | `30`       | Court availability refresh interval  |
 | `COOKIE_SECURE`           | `0`        | Set `1` when serving over HTTPS      |
+| `PUBLIC_ORIGIN`           | —          | Canonical base URL (e.g. `https://freipadel.example.com`); when set, all links in outgoing email are built from it |
 | `EMAILER_ENABLED`         | —          | Wether the emailer is enabled        |
 | `SMTP_HOST`               | —          | SMTP server hostname                 |
 | `SMTP_PORT`               | `587`      | SMTP submission port                 |
