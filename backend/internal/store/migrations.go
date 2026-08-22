@@ -187,14 +187,14 @@ var schemaMigrations = []schemaMigration{
 		Name:    "add pending email changes",
 		Up: func(tx *sql.Tx) error {
 			_, err := tx.Exec(`
-				CREATE TABLE pending_email_changes (
+				CREATE TABLE IF NOT EXISTS pending_email_changes (
 					user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 					new_email    TEXT NOT NULL UNIQUE COLLATE NOCASE,
 					token_hash   TEXT NOT NULL UNIQUE,
 					requested_at TEXT NOT NULL DEFAULT (datetime('now')),
 					expires_at   TEXT NOT NULL
 				);
-				CREATE INDEX idx_pending_email_changes_expires_at
+				CREATE INDEX IF NOT EXISTS idx_pending_email_changes_expires_at
 					ON pending_email_changes(expires_at);
 			`)
 			return err

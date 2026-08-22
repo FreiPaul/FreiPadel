@@ -220,9 +220,10 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 
 	// notify admin via telegram
 	a.telegramSender.SendMsg(a.scrapeCfg.Telegram.AdminChatID, fmt.Sprint("New FreiPadel Poll from ", u.Name))
-	err = a.notifyOnNewPoll(req.Origin)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, fmt.Sprintf("Error happenedf: %s", err))
+	// A failed notification must not fail the poll: it is already committed
+	// and broadcast over SSE. Same as handleClosePoll.
+	if err := a.notifyOnNewPoll(req.Origin); err != nil {
+		log.Printf("notify on new poll %d: %v", pollID, err)
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": pollID})
