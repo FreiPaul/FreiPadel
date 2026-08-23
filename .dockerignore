@@ -12,3 +12,4 @@ frontend/.svelte-kit
 frontend/build
 logic/venv
 logic/__pycache__
+e2e

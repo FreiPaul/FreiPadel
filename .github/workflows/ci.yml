@@ -1,0 +1,104 @@
+# FreiPadel CI
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend (check + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Keep in sync with the node:22-alpine stage in the Dockerfile.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # svelte-kit sync + svelte-check. Warnings do not fail the build yet.
+      - run: npm run check
+
+      - run: npm run build
+
+  backend:
+    name: backend (vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod is the single source of truth for the toolchain version.
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - run: go vet ./...
+
+      # SQLite is pure Go here, so the race detector costs almost nothing.
+      - run: go test -race ./...
+
+  e2e:
+    name: e2e (docker + playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      # Builds the production image, brings up app + Mailpit + a sqlite shell,
+      # and drives the whole journey through the browser. This is also the
+      # gate on the Dockerfile itself — a broken image fails here first.
+      - run: npm test
+
+      - name: Container logs
+        if: failure()
+        run: cat .tmp/containers.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-report
+          path: |
+            e2e/.tmp/report
+            e2e/.tmp/test-results
+            e2e/.tmp/containers.log
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down -v --remove-orphans

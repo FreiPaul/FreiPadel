@@ -1,0 +1,29 @@
+{
+  "sources": [
+    {
+      "type": "mock",
+      "options": {
+        "location": "Mock Padel Club",
+        "courts": ["Court 1", "Court 2"],
+        "times": ["18:00", "19:30"],
+        "duration_minutes": 90,
+        "price": 24
+      }
+    },
+    {
+      "type": "mock",
+      "options": {
+        "location": "Second Club",
+        "courts": ["Court A"],
+        "times": ["18:00"],
+        "duration_minutes": 60,
+        "price": 18
+      }
+    }
+  ],
+  "days_ahead": 21,
+  "time_start": "07:00",
+  "time_end": "22:00",
+  "timezone": "Europe/Berlin",
+  "telegram": {}
+}
