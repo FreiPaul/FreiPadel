@@ -1,5 +1,9 @@
 # 🎾 FreiPadel
 
+[![CI](https://github.com/FreiPaul/FreiPadel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FreiPaul/FreiPadel/actions/workflows/ci.yml)
+[![app](https://img.shields.io/uptimerobot/status/m803810552-4245b76239cb2a9f56f75e0a?label=app)](https://freipadel.freipaul.com)
+[![uptime 30d](https://img.shields.io/uptimerobot/ratio/30/m803810552-4245b76239cb2a9f56f75e0a?label=uptime%2030d)](https://freipadel.freipaul.com)
+
 Find padel slots where enough people from your group have time.
 
 FreiPadel scrapes free court slots from pluggable booking providers (see
