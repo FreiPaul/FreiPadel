@@ -1,7 +1,8 @@
 # 🎾 FreiPadel
 
 [![CI](https://github.com/FreiPaul/FreiPadel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FreiPaul/FreiPadel/actions/workflows/ci.yml)
-[![app](https://img.shields.io/website?url=https%3A%2F%2Ffreipadel.freipaul.com%2Fapi%2Fauth%2Fsetup&label=freipadel.freipaul.com&up_message=online&down_message=offline&up_color=brightgreen&down_color=red&cacheSeconds=300)](https://freipadel.freipaul.com)
+[![app](https://img.shields.io/uptimerobot/status/m803810552-4245b76239cb2a9f56f75e0a?label=app)](https://freipadel.freipaul.com)
+[![uptime 30d](https://img.shields.io/uptimerobot/ratio/30/m803810552-4245b76239cb2a9f56f75e0a?label=uptime%2030d)](https://freipadel.freipaul.com)
 
 Find padel slots where enough people from your group have time.
 
