@@ -28,3 +28,7 @@ backend/scraper/testdata/
 
 *.env
 .aider*
+
+# e2e test harness
+e2e/node_modules/
+e2e/.tmp/

@@ -1,0 +1,80 @@
+# End-to-end test stack: the real production image, a Mailpit inbox and a
+# sqlite3 shell for verifying what actually landed in the database.
+#
+# Nothing here is shared with docker-compose.yml — the app runs on its own
+# ports (8099/8125) so a dev instance can keep running on 8080, and the data
+# lives in a named volume that global-setup destroys before every run.
+
+name: freipadel-e2e
+
+volumes:
+  data:
+
+services:
+  mailpit:
+    image: axllent/mailpit:v1.28
+    environment:
+      # The app sends without AUTH and without STARTTLS (SMTP_INSECURE=1).
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      # Web UI + REST API. SMTP (1025) stays on the internal network.
+      - "8125:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # One-shot: put the deterministic scraper config in place before first boot.
+  # LoadConfig only writes its defaults when the file is absent, so this has to
+  # run before the app starts. Behind a profile so `up` ignores it; global-setup
+  # invokes it with `compose run --rm seed`.
+  seed:
+    image: alpine:3
+    profiles: ["tools"]
+    volumes:
+      - data:/data
+      - ./fixtures:/fixtures:ro
+    command: ["sh", "-c", "cp /fixtures/config.json /data/config.json"]
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: freipadel:e2e
+    volumes:
+      - data:/data
+    ports:
+      - "8099:8080"
+    environment:
+      DATA_DIR: /data
+      COOKIE_SECURE: "0"
+      # Canonical origin for links in outgoing mail. Deliberately set, so the
+      # tests can prove a forged request origin is ignored.
+      PUBLIC_ORIGIN: "http://localhost:8099"
+      EMAILER_ENABLED: "1"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_INSECURE: "1"
+      MAIL_FROM: freipadel@e2e.test
+      # SMTP_USER/SMTP_PASS deliberately unset — the emailer then skips AUTH.
+      # TELEGRAM_* deliberately unset — SendMsg no-ops on chat id 0.
+      SCRAPE_INTERVAL_MINUTES: "5"
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      # busybox wget — the alpine runtime image has no curl.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/auth/setup"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  # Idle container the test helpers exec into to run read-only queries.
+  sqlite:
+    build:
+      context: ./sqlite
+    image: freipadel-e2e-sqlite:latest
+    volumes:
+      - data:/data

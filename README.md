@@ -35,6 +35,22 @@ config live in `./data/` (created on first start).
   origin is used, which is fine for local development. A malformed value stops
   the server at startup.
 
+## Tests
+
+```sh
+make test          # frontend type-check (svelte-check) + go test ./...
+make e2e-install   # once: Playwright and its Chromium build
+make e2e           # end-to-end suite
+```
+
+`make e2e` builds the production image and drives the whole application
+through a browser — registration, all three invite kinds, availability and
+notification settings, a slot poll from creation to a booked winner — against
+a throwaway database, the built-in mock scrape source and a
+[Mailpit](https://mailpit.axllent.org) inbox that catches every outgoing mail.
+See [`e2e/README.md`](e2e/README.md). All three run in CI on every push and
+pull request (`.github/workflows/ci.yml`).
+
 ## Production deployment
 
 Copy the SMTP and Telegram credentials into the Git-ignored
