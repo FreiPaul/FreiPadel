@@ -40,6 +40,14 @@ type SettingsRecord struct {
 	Notifications string
 }
 
+type PendingEmailChangeRecord struct {
+	UserID      int64
+	NewEmail    string
+	TokenHash   string
+	RequestedAt string
+	ExpiresAt   string
+}
+
 func CountUsers(db *gorm.DB) (int64, error) {
 	var count int64
 	err := db.Model(&userModel{}).Count(&count).Error
@@ -107,6 +115,11 @@ func PromoteAdmin(db *gorm.DB, email string) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+func UpdateUserEmail(db *gorm.DB, userID int64, email string) (int64, error) {
+	result := db.Model(&userModel{}).Where("id = ?", userID).Update("email", email)
+	return result.RowsAffected, result.Error
+}
+
 func CreateSession(db *gorm.DB, tokenHash string, userID int64, expiresAt string) error {
 	return db.Create(&sessionModel{Token: tokenHash, UserID: userID, ExpiresAt: expiresAt}).Error
 }
@@ -128,6 +141,92 @@ func DeleteSessionsForUserEmail(db *gorm.DB, email string) error {
 
 func DeleteExpiredSessions(db *gorm.DB) error {
 	return db.Where("expires_at <= ?", sqliteTime(time.Now().UTC())).Delete(&sessionModel{}).Error
+}
+
+func UpsertPendingEmailChange(db *gorm.DB, userID int64, newEmail, tokenHash string, expiresAt time.Time) error {
+	model := pendingEmailChangeModel{
+		UserID:      userID,
+		NewEmail:    newEmail,
+		TokenHash:   tokenHash,
+		RequestedAt: sqliteTime(time.Now().UTC()),
+		ExpiresAt:   sqliteTime(expiresAt.UTC()),
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"new_email", "token_hash", "requested_at", "expires_at",
+		}),
+	}).Create(&model).Error
+}
+
+func FindPendingEmailChangeByUserID(db *gorm.DB, userID int64) (PendingEmailChangeRecord, error) {
+	model, err := gorm.G[pendingEmailChangeModel](db).
+		Where("user_id = ? AND expires_at > ?", userID, sqliteTime(time.Now().UTC())).
+		First(db.Statement.Context)
+	if err != nil {
+		return PendingEmailChangeRecord{}, err
+	}
+	return pendingEmailChangeRecord(model), nil
+}
+
+func FindPendingEmailChangeByTokenHash(db *gorm.DB, tokenHash string) (PendingEmailChangeRecord, error) {
+	model, err := gorm.G[pendingEmailChangeModel](db).
+		Where("token_hash = ?", tokenHash).
+		First(db.Statement.Context)
+	if err != nil {
+		return PendingEmailChangeRecord{}, err
+	}
+	return pendingEmailChangeRecord(model), nil
+}
+
+func DeletePendingEmailChangeForUser(db *gorm.DB, userID int64) error {
+	return db.Where("user_id = ?", userID).Delete(&pendingEmailChangeModel{}).Error
+}
+
+func DeletePendingEmailChangeByTokenHash(db *gorm.DB, tokenHash string) error {
+	return db.Where("token_hash = ?", tokenHash).Delete(&pendingEmailChangeModel{}).Error
+}
+
+func DeleteExpiredPendingEmailChanges(db *gorm.DB) error {
+	return db.Where("expires_at <= ?", sqliteTime(time.Now().UTC())).Delete(&pendingEmailChangeModel{}).Error
+}
+
+func PendingEmailChangeEmailExists(db *gorm.DB, email string, excludeUserID int64) (bool, error) {
+	query := db.Model(&pendingEmailChangeModel{}).
+		Where("new_email = ? AND expires_at > ?", email, sqliteTime(time.Now().UTC()))
+	if excludeUserID != 0 {
+		query = query.Where("user_id <> ?", excludeUserID)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count != 0, nil
+}
+
+// EmailUnavailable reports whether an email is owned by another user,
+// reserved by an active email invite, or reserved by another pending change.
+func EmailUnavailable(db *gorm.DB, email string, excludeUserID int64) (bool, error) {
+	users := db.Model(&userModel{}).Where("email = ?", email)
+	if excludeUserID != 0 {
+		users = users.Where("id <> ?", excludeUserID)
+	}
+	var count int64
+	if err := users.Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count != 0 {
+		return true, nil
+	}
+	if err := db.Model(&inviteModel{}).
+		Where("email = ? AND kind = 'email' AND disabled = ? AND used_by IS NULL", email, false).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count != 0 {
+		return true, nil
+	}
+	return PendingEmailChangeEmailExists(db, email, excludeUserID)
 }
 
 func FindInvite(db *gorm.DB, token string) (InviteRecord, error) {
@@ -159,18 +258,7 @@ func ListInvites(db *gorm.DB) ([]InviteRecord, error) {
 // UserOrInviteEmailExists reports whether email already belongs to an account or
 // to an outstanding invite.
 func UserOrInviteEmailExists(db *gorm.DB, email string) (bool, error) {
-	var userCount int64
-	if err := db.Model(&userModel{}).Where("email = ?", email).Count(&userCount).Error; err != nil {
-		return false, err
-	}
-	if userCount != 0 {
-		return true, nil
-	}
-	var inviteCount int64
-	if err := db.Model(&inviteModel{}).Where("email = ?", email).Count(&inviteCount).Error; err != nil {
-		return false, err
-	}
-	return inviteCount != 0, nil
+	return EmailUnavailable(db, email, 0)
 }
 
 func CreateInvite(db *gorm.DB, token string, createdBy int64, kind string, email *string) error {
@@ -257,6 +345,13 @@ func inviteRecord(model inviteModel) InviteRecord {
 		Token: model.Token, Kind: model.Kind, Email: model.Email, CreatedAt: model.CreatedAt,
 		UsedByID: model.UsedBy, UsedByName: usedByName, UsedAt: model.UsedAt,
 		Disabled: model.Disabled, Uses: model.Uses,
+	}
+}
+
+func pendingEmailChangeRecord(model pendingEmailChangeModel) PendingEmailChangeRecord {
+	return PendingEmailChangeRecord{
+		UserID: model.UserID, NewEmail: model.NewEmail, TokenHash: model.TokenHash,
+		RequestedAt: model.RequestedAt, ExpiresAt: model.ExpiresAt,
 	}
 }
 

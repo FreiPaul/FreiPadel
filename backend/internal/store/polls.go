@@ -102,6 +102,24 @@ func ListVotes(db *gorm.DB) ([]VoteRecord, error) {
 	return votes, nil
 }
 
+func ListVotesForPoll(db *gorm.DB, pollID int64) ([]VoteRecord, error) {
+	var models []voteModel
+	err := db.Model(&voteModel{}).
+		Joins("JOIN poll_slots ON poll_slots.id = votes.poll_slot_id").
+		Where("poll_slots.poll_id = ?", pollID).
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+	votes := make([]VoteRecord, len(models))
+	for i, model := range models {
+		votes[i] = VoteRecord{
+			PollSlotID: model.PollSlotID, UserID: model.UserID, Vote: model.Vote,
+		}
+	}
+	return votes, nil
+}
+
 func CreatePoll(db *gorm.DB, creatorID int64, title string, slots []PollSlotRecord) (int64, error) {
 	poll := pollModel{CreatorID: creatorID, Title: title}
 	if err := db.Create(&poll).Error; err != nil {

@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestIdentityAndSettingsPersistence(t *testing.T) {
@@ -57,6 +58,63 @@ func TestIdentityAndSettingsPersistence(t *testing.T) {
 	}
 	if _, err := FindUserBySession(storage.ORM, "token-hash"); !IsNotFound(err) {
 		t.Fatalf("deleted session lookup error = %v, want not found", err)
+	}
+}
+
+func TestPendingEmailChangePersistence(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "email-change.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+
+	first, err := CreateUser(storage.ORM, "first@example.com", "First", "hash", false)
+	if err != nil {
+		t.Fatalf("create first user: %v", err)
+	}
+	second, err := CreateUser(storage.ORM, "second@example.com", "Second", "hash", false)
+	if err != nil {
+		t.Fatalf("create second user: %v", err)
+	}
+
+	if err := UpsertPendingEmailChange(storage.ORM, first.ID, "new@example.com", "first-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create pending email change: %v", err)
+	}
+	pending, err := FindPendingEmailChangeByTokenHash(storage.ORM, "first-token")
+	if err != nil {
+		t.Fatalf("find pending email change: %v", err)
+	}
+	if pending.UserID != first.ID || pending.NewEmail != "new@example.com" {
+		t.Fatalf("pending email change = %#v", pending)
+	}
+	if exists, err := PendingEmailChangeEmailExists(storage.ORM, "NEW@example.com", second.ID); err != nil || !exists {
+		t.Fatalf("case-insensitive pending reservation = %v, error = %v", exists, err)
+	}
+	if exists, err := PendingEmailChangeEmailExists(storage.ORM, "new@example.com", first.ID); err != nil || exists {
+		t.Fatalf("own pending reservation = %v, error = %v", exists, err)
+	}
+	if err := UpsertPendingEmailChange(storage.ORM, second.ID, "NEW@example.com", "duplicate-token", time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("case-insensitive duplicate pending email was accepted")
+	}
+
+	if err := UpsertPendingEmailChange(storage.ORM, first.ID, "replacement@example.com", "second-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("replace pending email change: %v", err)
+	}
+	if _, err := FindPendingEmailChangeByTokenHash(storage.ORM, "first-token"); !IsNotFound(err) {
+		t.Fatalf("replaced token lookup error = %v, want not found", err)
+	}
+	if pending, err = FindPendingEmailChangeByUserID(storage.ORM, first.ID); err != nil || pending.TokenHash != "second-token" {
+		t.Fatalf("replacement pending email change = %#v, error = %v", pending, err)
+	}
+
+	if err := UpsertPendingEmailChange(storage.ORM, second.ID, "expired@example.com", "expired-token", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("create expired email change: %v", err)
+	}
+	if err := DeleteExpiredPendingEmailChanges(storage.ORM); err != nil {
+		t.Fatalf("delete expired email changes: %v", err)
+	}
+	if _, err := FindPendingEmailChangeByTokenHash(storage.ORM, "expired-token"); !IsNotFound(err) {
+		t.Fatalf("expired token lookup error = %v, want not found", err)
 	}
 }
 

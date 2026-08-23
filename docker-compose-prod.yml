@@ -22,3 +22,7 @@ services:
       # Prod is served over HTTPS (reverse proxy), so session cookies are
       # marked Secure and never sent over plain HTTP.
       COOKIE_SECURE: "1"
+      # Canonical public URL. Links in outgoing email (poll notifications,
+      # invites, email-change confirmations) are built from this instead of the
+      # origin the client sends, which is not trustworthy.
+      PUBLIC_ORIGIN: "https://freipadel.freipaul.com"

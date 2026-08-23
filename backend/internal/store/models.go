@@ -24,6 +24,16 @@ type sessionModel struct {
 
 func (sessionModel) TableName() string { return "sessions" }
 
+type pendingEmailChangeModel struct {
+	UserID      int64  `gorm:"column:user_id;primaryKey"`
+	NewEmail    string `gorm:"column:new_email;not null;unique;collate:nocase"`
+	TokenHash   string `gorm:"column:token_hash;not null;unique"`
+	RequestedAt string `gorm:"column:requested_at;not null;default:CURRENT_TIMESTAMP"`
+	ExpiresAt   string `gorm:"column:expires_at;not null"`
+}
+
+func (pendingEmailChangeModel) TableName() string { return "pending_email_changes" }
+
 type inviteModel struct {
 	Token      string     `gorm:"column:token;primaryKey"`
 	CreatedBy  int64      `gorm:"column:created_by;not null"`

@@ -17,6 +17,12 @@ export interface Settings {
 	days_ahead: number;
 	min_duration: number;
 	locations: string[]; // empty = all locations
+	notifications: Record<string, boolean>; // notification key -> enabled
+}
+
+export interface EmailChangeStatus {
+	pending_email: string | null;
+	expires_at: string | null;
 }
 
 export interface SlotGroup {
