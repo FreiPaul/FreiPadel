@@ -225,6 +225,14 @@ func main() {
 		httpError(w, http.StatusNotFound, "not found")
 	})
 
+	// The /dev scratch page is a local-development affordance. A configured
+	// PUBLIC_ORIGIN means this is a real deployment, so take it off the router;
+	// registered before "/" so it wins over the SPA fallback below.
+	if publicOrigin != "" {
+		mux.HandleFunc("/dev", http.NotFound)
+		mux.HandleFunc("/dev/", http.NotFound)
+	}
+
 	// Frontend (static SPA with index.html fallback for client-side routes).
 	mux.Handle("/", spaHandler(staticDir))
 

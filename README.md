@@ -37,7 +37,8 @@ config live in `./data/` (created on first start).
   `origin` the browser sends — otherwise any logged-in user could have mail with
   a link of their choosing sent to everyone. Left unset, the client-supplied
   origin is used, which is fine for local development. A malformed value stops
-  the server at startup.
+  the server at startup. Setting it also marks the deployment as non-local, so
+  the `/dev` scratch page is served as 404.
 
 ## Tests
 
@@ -77,7 +78,7 @@ from both the source archive and Docker build context.
 | `STATIC_DIR`              | `./static` | Built frontend to serve              |
 | `SCRAPE_INTERVAL_MINUTES` | `30`       | Court availability refresh interval  |
 | `COOKIE_SECURE`           | `0`        | Set `1` when serving over HTTPS      |
-| `PUBLIC_ORIGIN`           | —          | Canonical base URL (e.g. `https://freipadel.example.com`); when set, all links in outgoing email are built from it |
+| `PUBLIC_ORIGIN`           | —          | Canonical base URL (e.g. `https://freipadel.example.com`); when set, all links in outgoing email are built from it and the `/dev` scratch page is disabled |
 | `EMAILER_ENABLED`         | —          | Wether the emailer is enabled        |
 | `SMTP_HOST`               | —          | SMTP server hostname                 |
 | `SMTP_PORT`               | `587`      | SMTP submission port                 |
