@@ -41,11 +41,18 @@ test.describe.serial('invites', () => {
 			const group = tokenFromURL(groupURL);
 			expect(singleURL).toBe(`http://localhost:8099/register?token=${single}`);
 
-			const invites = rows<{ token: string; kind: string; email: string | null; disabled: number; uses: number }>(
-				'SELECT token, kind, email, disabled, uses FROM invites ORDER BY rowid'
-			);
+			const invites = rows<{
+				token: string;
+				kind: string;
+				email: string | null;
+				disabled: number;
+				uses: number;
+				club_id: number;
+			}>('SELECT token, kind, email, disabled, uses, club_id FROM invites ORDER BY rowid');
 			expect(invites).toHaveLength(3);
 			expect(invites.map((i) => i.kind)).toEqual(['single', 'group', 'email']);
+			// Every invite joins its holder to one club — here the admin's own.
+			expect(invites.every((i) => i.club_id === need('allClubId'))).toBe(true);
 			expect(invites.map((i) => i.email)).toEqual([null, null, personas.dave.email]);
 			expect(invites.every((i) => i.disabled === 0 && i.uses === 0)).toBe(true);
 			expect(invites[0].token).toBe(single);
@@ -88,11 +95,23 @@ test.describe.serial('invites', () => {
 	test('the public check endpoint reports each invite state', async ({ request, page }) => {
 		const single = need('singleInviteToken');
 
+		// The check names the club, so the redemption page can say what you are
+		// about to join.
 		const ok = await request.get(`/api/invites/${single}/check`);
-		expect(await ok.json()).toEqual({ valid: true, email: '' });
+		expect(await ok.json()).toEqual({
+			valid: true,
+			email: '',
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		const emailInvite = await request.get(`/api/invites/${need('emailInviteToken')}/check`);
-		expect(await emailInvite.json()).toEqual({ valid: true, email: personas.dave.email });
+		expect(await emailInvite.json()).toEqual({
+			valid: true,
+			email: personas.dave.email,
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		const unknown = await request.get('/api/invites/not-a-real-token/check');
 		expect(await unknown.json()).toEqual({ valid: false, reason: 'unknown' });

@@ -30,6 +30,7 @@
             {#snippet child({ props })}
                 <Button
                     {...props}
+                    data-testid="club-switcher"
                     variant="outline"
                     size="sm"
                     class="w-full justify-between gap-2"

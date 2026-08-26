@@ -268,6 +268,7 @@
                                         {#each venues as venue (venue)}
                                             <button
                                                 type="button"
+                                                data-testid="club-venue"
                                                 disabled={busy}
                                                 class="rounded-full border px-3 py-1 text-xs transition-colors
 													{club.locations.includes(venue)

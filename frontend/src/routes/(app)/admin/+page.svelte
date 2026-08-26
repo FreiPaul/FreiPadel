@@ -141,6 +141,7 @@
 		{#each clubs as club (club.id)}
 			<button
 				type="button"
+				data-testid="invite-club"
 				class="rounded-full border px-3 py-1 text-xs transition-colors
 					{club.id === targetClubId ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}"
 				onclick={() => (inviteClubId = club.id)}

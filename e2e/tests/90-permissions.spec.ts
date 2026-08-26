@@ -24,7 +24,7 @@ test.describe.serial('permissions', () => {
 			await page.goto('/slots');
 			await waitForSync(page);
 			await expect(page.getByRole('link', { name: 'Available slots' })).toBeVisible();
-			await expect(page.getByRole('link', { name: 'Invites' })).toHaveCount(0);
+			await expect(page.getByRole('link', { name: 'Administration' })).toHaveCount(0);
 
 			for (const res of [
 				await page.request.get('/api/invites'),
@@ -33,7 +33,8 @@ test.describe.serial('permissions', () => {
 				expect(res.status()).toBe(403);
 				expect(await res.json()).toEqual({ error: 'admin only' });
 			}
-			expect(count('invites')).toBe(3);
+			// Three into "All" from phase 10, plus the Köln Crew one from phase 50.
+			expect(count('invites')).toBe(4);
 		});
 
 		test('cannot manage a poll somebody else created', async ({ page }) => {
@@ -45,7 +46,8 @@ test.describe.serial('permissions', () => {
 			const res = await page.request.delete(`/api/polls/${need('pollId')}`);
 			expect(res.status()).toBe(403);
 			expect(await res.json()).toEqual({ error: 'only the poll creator can delete it' });
-			expect(count('polls')).toBe(1);
+			// Hers from phase 30 and the Köln Crew one from phase 50.
+			expect(count('polls')).toBe(2);
 		});
 	});
 

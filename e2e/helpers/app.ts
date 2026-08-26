@@ -90,6 +90,31 @@ export async function newPersonaContext(browser: Browser, key?: PersonaKey): Pro
 	});
 }
 
+/**
+ * Switch the active club through the sidebar switcher, and wait for the app to
+ * settle on it. The switcher is a dropdown labelled with the current club.
+ */
+export async function switchClub(page: Page, to: string): Promise<void> {
+	const trigger = page.getByTestId('club-switcher');
+	await trigger.click();
+	await page.getByRole('menuitem', { name: to, exact: false }).click();
+	await expect(trigger).toContainText(to);
+}
+
+/** The club the switcher is currently showing. */
+export function clubSwitcher(page: Page): Locator {
+	return page.getByTestId('club-switcher');
+}
+
+/** The clubs the logged-in user belongs to, and which one is active. */
+export async function getClubs(
+	page: Page
+): Promise<{ clubs: { id: number; name: string; locations: string[] }[]; active_club_id: number | null }> {
+	const res = await page.request.get('/api/clubs');
+	expect(res.ok()).toBeTruthy();
+	return await res.json();
+}
+
 /** The admin page's row for one invite, located by the token suffix it renders. */
 export function inviteRow(page: Page, token: string): Locator {
 	const code = page.getByText(`…${token.slice(-8)}`, { exact: true });

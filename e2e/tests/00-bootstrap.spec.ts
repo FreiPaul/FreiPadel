@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
-import { count, one, rows, scalar } from '../helpers/db';
+import { count, one, rows, scalar, userId } from '../helpers/db';
 import { listMail } from '../helpers/mail';
 import { personas, stateFile } from '../helpers/personas';
 import { registerViaUI, saveState, waitForSync } from '../helpers/app';
+import { writeScratch } from '../helpers/scratch';
 
 // Phase 00 — an empty deployment: setup state, the startup scrape, and the
 // first account becoming the admin.
@@ -35,8 +36,8 @@ test.describe.serial('bootstrap', () => {
 		await registerViaUI(page, personas.alice);
 		await waitForSync(page);
 
-		// Only admins get the Invites tab.
-		await expect(page.getByRole('link', { name: 'Invites' })).toBeVisible();
+		// Only admins get the administration tab.
+		await expect(page.getByRole('link', { name: 'Administration' })).toBeVisible();
 
 		expect(
 			rows<{ email: string; name: string; is_admin: number }>(
@@ -66,6 +67,29 @@ test.describe.serial('bootstrap', () => {
 		expect(JSON.parse(settings!.notifications)).toEqual({});
 
 		await saveState(page, 'alice');
+	});
+
+	// A fresh deployment has no admin to own a club when the migration runs, so
+	// the first registration founds "All" instead.
+	test('the first account founds the All club and lands in it', async ({ page }) => {
+		const club = one<{ id: number; name: string; owner_id: number; locations: string }>(
+			'SELECT id, name, owner_id, locations FROM clubs'
+		);
+		expect(club).toMatchObject({ name: 'All', owner_id: userId(personas.alice.email) });
+		// An empty venue list means every venue.
+		expect(club!.locations).toBe('[]');
+
+		expect(count('club_members', 'club_id = ?', club!.id)).toBe(1);
+		expect(
+			one<{ active_club_id: number }>('SELECT active_club_id FROM users WHERE email = ?', personas.alice.email)
+		).toEqual({ active_club_id: club!.id });
+
+		// The switcher names the club she is in.
+		await page.goto('/slots');
+		await waitForSync(page);
+		await expect(page.getByRole('button', { name: 'All' })).toBeVisible();
+
+		writeScratch({ allClubId: club!.id });
 	});
 
 	test('registering does not send any email', async () => {
