@@ -37,6 +37,7 @@ type syncPollSlot struct {
 
 type syncPoll struct {
 	ID            int64          `json:"id"`
+	ClubID        int64          `json:"club_id"`
 	Title         string         `json:"title"`
 	CreatorID     int64          `json:"creator_id"`
 	CreatorName   string         `json:"creator_name"`
@@ -71,22 +72,83 @@ type syncEvent struct {
 	Payload  json.RawMessage `json:"payload,omitempty"`
 
 	visibleTo int64 // 0 = everyone; -1 = admins; otherwise only this user id
+	clubID    int64 // 0 = not scoped to a club
 }
 
 type subscriber struct {
 	userID  int64
 	isAdmin bool
+	clubIDs map[int64]bool // clubs this user belongs to
+	owned   map[int64]bool // clubs this user owns
 }
 
-func (s subscriber) canSee(visibleTo int64) bool {
+// canSee decides what one connection may read. It is the single authority:
+// ReadSyncLog's SQL narrows rows only as a prefilter, so the two can never
+// disagree.
+//
+// A club-scoped delta reaches that club's members. Global admins are not
+// implicitly members — otherwise every admin client would accumulate polls it
+// never renders — but they do see club management deltas (invites) everywhere,
+// as does the club's own owner.
+func (s subscriber) canSee(visibleTo, clubID int64) bool {
+	if clubID == 0 {
+		switch visibleTo {
+		case 0:
+			return true
+		case visibleToAdmins:
+			return s.isAdmin
+		default:
+			return visibleTo == s.userID
+		}
+	}
 	switch visibleTo {
 	case 0:
-		return true
+		return s.clubIDs[clubID]
 	case visibleToAdmins:
-		return s.isAdmin
+		return s.isAdmin || s.owned[clubID]
 	default:
 		return visibleTo == s.userID
 	}
+}
+
+// newSubscriber snapshots a user's club membership for the life of one SSE
+// connection. A membership change emits a "me" delta, the client re-bootstraps
+// and reconnects, and this is rebuilt.
+func (a *App) newSubscriber(r *http.Request, u *User) (subscriber, error) {
+	db := a.orm.WithContext(r.Context())
+	memberOf, err := store.ListClubMemberIDs(db, u.ID)
+	if err != nil {
+		return subscriber{}, err
+	}
+	owned, err := store.ListOwnedClubIDs(db, u.ID)
+	if err != nil {
+		return subscriber{}, err
+	}
+	sub := subscriber{
+		userID: u.ID, isAdmin: u.IsAdmin,
+		clubIDs: make(map[int64]bool, len(memberOf)),
+		owned:   make(map[int64]bool, len(owned)),
+	}
+	for _, clubID := range memberOf {
+		sub.clubIDs[clubID] = true
+	}
+	for _, clubID := range owned {
+		sub.owned[clubID] = true
+	}
+	return sub, nil
+}
+
+func (s subscriber) clubList() []int64 {
+	clubIDs := make([]int64, 0, len(s.clubIDs)+len(s.owned))
+	for clubID := range s.clubIDs {
+		clubIDs = append(clubIDs, clubID)
+	}
+	for clubID := range s.owned {
+		if !s.clubIDs[clubID] {
+			clubIDs = append(clubIDs, clubID)
+		}
+	}
+	return clubIDs
 }
 
 func loadSyncPollGORM(db *gorm.DB, id int64) (*syncPoll, error) {
@@ -94,12 +156,13 @@ func loadSyncPollGORM(db *gorm.DB, id int64) (*syncPoll, error) {
 	if err != nil {
 		return nil, err
 	}
-	slots, err := store.ListPollSlots(db, &id)
+	slots, err := store.ListPollSlots(db, &id, nil)
 	if err != nil {
 		return nil, err
 	}
 	poll := &syncPoll{
-		ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+		ID: record.ID, ClubID: record.ClubID, Title: record.Title,
+		CreatorID: record.CreatorID, CreatorName: record.CreatorName,
 		Status: record.Status, WinningSlotID: record.WinningSlotID,
 		CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: make([]syncPollSlot, len(slots)),
 	}
@@ -164,7 +227,7 @@ func (h *syncHub) fanOut(ev syncEvent) {
 		h.lastDispatched = ev.ID
 	}
 	for ch, sub := range h.subs {
-		if !sub.canSee(ev.visibleTo) {
+		if !sub.canSee(ev.visibleTo, ev.clubID) {
 			continue
 		}
 		select {
@@ -190,22 +253,28 @@ func (h *syncHub) broadcastEphemeral(entity, entityID string, payload any) {
 func (h *syncHub) readLog(since int64, sub *subscriber) ([]syncEvent, error) {
 	var userID int64
 	var isAdmin bool
+	var clubIDs []int64
 	if sub != nil {
-		userID, isAdmin = sub.userID, sub.isAdmin
+		userID, isAdmin, clubIDs = sub.userID, sub.isAdmin, sub.clubList()
 	}
-	records, err := store.ReadSyncLog(h.db, since, userID, isAdmin, sub != nil)
+	records, err := store.ReadSyncLog(h.db, since, userID, isAdmin, clubIDs, sub != nil)
 	if err != nil {
 		return nil, err
 	}
-	events := make([]syncEvent, len(records))
-	for i, record := range records {
-		events[i] = syncEvent{
+	events := make([]syncEvent, 0, len(records))
+	for _, record := range records {
+		event := syncEvent{
 			ID: record.ID, Entity: record.Entity, EntityID: record.EntityID,
-			Action: record.Action, visibleTo: record.VisibleTo,
+			Action: record.Action, visibleTo: record.VisibleTo, clubID: record.ClubID,
 		}
 		if record.Payload != "" {
-			events[i].Payload = json.RawMessage(record.Payload)
+			event.Payload = json.RawMessage(record.Payload)
 		}
+		// The SQL above only narrows; this is what actually decides.
+		if sub != nil && !sub.canSee(event.visibleTo, event.clubID) {
+			continue
+		}
+		events = append(events, event)
 	}
 	return events, nil
 }
@@ -253,9 +322,23 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 	// replayed by the event stream, and deltas apply idempotently.
 	syncID, _ := store.MaxSyncID(a.orm.WithContext(r.Context()))
 
+	// Everything below is scoped to the clubs this user belongs to — all of
+	// them, not just the active one, so the switcher's badges are already
+	// there when they open it.
+	clubRecords, err := store.ListClubsForUser(a.orm.WithContext(r.Context()), u.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	clubs := clubList(clubRecords, u.ID)
+	clubIDs := make([]int64, len(clubRecords))
+	for i, club := range clubRecords {
+		clubIDs[i] = club.ID
+	}
+
 	// The pool has a single connection: each result set must be fully read
 	// before the next query starts.
-	memberRecords, err := store.ListMembers(a.orm.WithContext(r.Context()))
+	memberRecords, err := store.ListVisibleMembers(a.orm.WithContext(r.Context()), u.ID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -271,13 +354,13 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 		return
 	}
 
-	polls, err := loadSyncPollsGORM(a.orm.WithContext(r.Context()))
+	polls, err := loadSyncPollsGORM(a.orm.WithContext(r.Context()), clubIDs)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
-	voteRecords, err := store.ListVotes(a.orm.WithContext(r.Context()))
+	voteRecords, err := store.ListVotes(a.orm.WithContext(r.Context()), clubIDs)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -287,16 +370,22 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 		votes[i] = syncVote{PollSlotID: vote.PollSlotID, UserID: vote.UserID, Name: vote.Name, Vote: vote.Vote}
 	}
 
-	keys, err := slotSnapshotKeysGORM(a.orm.WithContext(r.Context()))
+	keys, err := slotSnapshotKeysGORM(a.orm.WithContext(r.Context()), clubRecords)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
-	// Invites are admin-only, like their deltas.
+	// Invites go to whoever may manage the club they belong to: global admins
+	// everywhere, club owners for their own.
 	var invites []Invite
-	if u.IsAdmin {
-		records, loadErr := store.ListInvites(a.orm.WithContext(r.Context()))
+	if u.IsAdmin || ownsAnyClub(clubRecords, u.ID) {
+		scope, scopeErr := a.inviteScope(r, u)
+		if scopeErr != nil {
+			httpError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		records, loadErr := store.ListInvites(a.orm.WithContext(r.Context()), scope)
 		if loadErr != nil {
 			httpError(w, http.StatusInternalServerError, "database error")
 			return
@@ -309,6 +398,8 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sync_id":         syncID,
+		"clubs":           clubs,
+		"active_club_id":  u.ActiveClubID,
 		"users":           users,
 		"settings":        settings,
 		"polls":           polls,
@@ -320,8 +411,17 @@ func (a *App) handleSyncBootstrap(w http.ResponseWriter, r *http.Request, u *Use
 	})
 }
 
-func loadSyncPollsGORM(db *gorm.DB) ([]*syncPoll, error) {
-	records, err := store.ListPolls(db)
+func ownsAnyClub(clubs []store.ClubRecord, userID int64) bool {
+	for _, club := range clubs {
+		if club.OwnerID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func loadSyncPollsGORM(db *gorm.DB, clubIDs []int64) ([]*syncPoll, error) {
+	records, err := store.ListPolls(db, clubIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -329,13 +429,14 @@ func loadSyncPollsGORM(db *gorm.DB) ([]*syncPoll, error) {
 	byID := make(map[int64]*syncPoll, len(records))
 	for i, record := range records {
 		polls[i] = &syncPoll{
-			ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+			ID: record.ID, ClubID: record.ClubID, Title: record.Title,
+			CreatorID: record.CreatorID, CreatorName: record.CreatorName,
 			Status: record.Status, WinningSlotID: record.WinningSlotID,
 			CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: []syncPollSlot{},
 		}
 		byID[record.ID] = polls[i]
 	}
-	slots, err := store.ListPollSlots(db, nil)
+	slots, err := store.ListPollSlots(db, nil, clubIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -350,16 +451,37 @@ func loadSyncPollsGORM(db *gorm.DB) ([]*syncPoll, error) {
 	return polls, nil
 }
 
-func slotSnapshotKeysGORM(db *gorm.DB) ([]string, error) {
+// slotSnapshotKeysGORM returns the bookable slot keys of each club, keyed by
+// club id. Only the keys are synced; the slot rows themselves stay lazy and are
+// fetched per club by /api/slots when the page opens.
+func slotSnapshotKeysGORM(db *gorm.DB, clubs []store.ClubRecord) (map[string][]string, error) {
 	slots, err := store.ListSlotAvailability(db)
 	if err != nil {
 		return nil, err
 	}
-	keys := make([]string, len(slots))
-	for i, slot := range slots {
-		keys[i] = slotKey(slot.Date, slot.Time, slot.DurationMinutes, slot.Location)
+	byClub := make(map[string][]string, len(clubs))
+	for _, club := range clubs {
+		byClub[strconv.FormatInt(club.ID, 10)] = clubSlotKeys(slots, parseLocations(club.Locations))
 	}
-	return keys, nil
+	return byClub, nil
+}
+
+func clubSlotKeys(slots []store.SlotRecord, locations []string) []string {
+	var allowed map[string]bool
+	if len(locations) != 0 {
+		allowed = make(map[string]bool, len(locations))
+		for _, location := range locations {
+			allowed[location] = true
+		}
+	}
+	keys := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		if allowed != nil && !allowed[slot.Location] {
+			continue
+		}
+		keys = append(keys, slotKey(slot.Date, slot.Time, slot.DurationMinutes, slot.Location))
+	}
+	return keys
 }
 
 // GET /api/sync/events — SSE delta stream. Resumes from Last-Event-ID (sent
@@ -382,7 +504,12 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 
 	// Subscribe before replaying: events ≤ since come from the log below,
 	// events > since arrive on the channel — no gap, duplicates filtered by id.
-	ch, since := a.hub.subscribe(subscriber{userID: u.ID, isAdmin: u.IsAdmin})
+	sub, err := a.newSubscriber(r, u)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	ch, since := a.hub.subscribe(sub)
 	defer a.hub.unsubscribe(ch)
 
 	// If compaction trimmed past the client's cursor the replay would be
@@ -395,7 +522,7 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 
 	sent := lastID
 	if lastID < since {
-		evs, err := a.hub.readLog(lastID, &subscriber{userID: u.ID, isAdmin: u.IsAdmin})
+		evs, err := a.hub.readLog(lastID, &sub)
 		if err == nil {
 			for _, ev := range evs {
 				if ev.ID > since {

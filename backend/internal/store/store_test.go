@@ -176,7 +176,7 @@ func TestGORMMetadataAndSyncWrites(t *testing.T) {
 		if err := tx.Create(&userModel{Email: "rollback@example.com", Name: "Rollback", PasswordHash: "hash"}).Error; err != nil {
 			return err
 		}
-		if err := AppendSync(tx, "user", "rollback", "upsert", []byte(`{"id":1}`), 7); err != nil {
+		if err := AppendSync(tx, "user", "rollback", "upsert", []byte(`{"id":1}`), 7, 0); err != nil {
 			return err
 		}
 		return wantErr
@@ -195,7 +195,7 @@ func TestGORMMetadataAndSyncWrites(t *testing.T) {
 		if err := tx.Create(&userModel{Email: "commit@example.com", Name: "Commit", PasswordHash: "hash"}).Error; err != nil {
 			return err
 		}
-		return AppendSync(tx, "user", "commit", "upsert", []byte(`{"id":2}`), 0)
+		return AppendSync(tx, "user", "commit", "upsert", []byte(`{"id":2}`), 0, 0)
 	})
 	if err != nil {
 		t.Fatalf("commit transaction: %v", err)
@@ -448,4 +448,18 @@ func TestVoteCompositeKeyAndPollCascade(t *testing.T) {
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM votes WHERE poll_slot_id = ?`, slotID); got != 0 {
 		t.Errorf("vote count after poll deletion = %d, want 0", got)
 	}
+}
+
+// testClub creates a club owned by the given user, for tests that need
+// somewhere to hang club-scoped rows.
+func testClub(t *testing.T, storage *Store, ownerID int64) ClubRecord {
+	t.Helper()
+	club, err := CreateClub(storage.ORM, "Test Club", ownerID)
+	if err != nil {
+		t.Fatalf("create club: %v", err)
+	}
+	if err := AddClubMember(storage.ORM, club.ID, ownerID); err != nil {
+		t.Fatalf("add club member: %v", err)
+	}
+	return club
 }

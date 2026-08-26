@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"freipadel/internal/store"
+	"freipadel/scraper"
 
 	"gorm.io/gorm"
 )
@@ -54,12 +55,44 @@ type Poll struct {
 	WinningSlotID *int64     `json:"winning_slot_id"`
 	CreatedAt     string     `json:"created_at"`
 	ClosedAt      *string    `json:"closed_at"`
+	ClubID        int64      `json:"club_id"`
 	Slots         []PollSlot `json:"slots"`
 }
 
-// GET /api/polls — all polls with full details (small group, cheap enough).
+// pollClub resolves the club a poll belongs to and checks the caller is in it.
+// Membership — not the global admin flag — is what grants access to a club's
+// polls; administering a club has its own routes.
+func (a *App) pollClub(w http.ResponseWriter, r *http.Request, u *User, pollID int64) (int64, bool) {
+	poll, err := store.FindPoll(a.orm.WithContext(r.Context()), pollID)
+	if store.IsNotFound(err) {
+		httpError(w, http.StatusNotFound, "poll not found")
+		return 0, false
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return 0, false
+	}
+	member, err := store.IsClubMember(a.orm.WithContext(r.Context()), poll.ClubID, u.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return 0, false
+	}
+	if !member {
+		httpError(w, http.StatusForbidden, "this poll belongs to another club")
+		return 0, false
+	}
+	return poll.ClubID, true
+}
+
+// GET /api/polls — every poll in the caller's clubs, with full details
+// (small groups, cheap enough).
 func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
-	records, err := store.ListPolls(a.orm.WithContext(r.Context()))
+	clubIDs, err := store.ListClubMemberIDs(a.orm.WithContext(r.Context()), u.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	records, err := store.ListPolls(a.orm.WithContext(r.Context()), clubIDs)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -68,7 +101,8 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 	byID := map[int64]*Poll{}
 	for _, record := range records {
 		p := Poll{
-			ID: record.ID, Title: record.Title, CreatorID: record.CreatorID, CreatorName: record.CreatorName,
+			ID: record.ID, ClubID: record.ClubID, Title: record.Title,
+			CreatorID: record.CreatorID, CreatorName: record.CreatorName,
 			Status: record.Status, WinningSlotID: record.WinningSlotID,
 			CreatedAt: record.CreatedAt, ClosedAt: record.ClosedAt, Slots: []PollSlot{},
 		}
@@ -94,7 +128,7 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 	now := time.Now().In(a.tz)
 	today, nowTime := now.Format("2006-01-02"), now.Format("15:04")
 
-	slotRecords, err := store.ListPollSlots(a.orm.WithContext(r.Context()), nil)
+	slotRecords, err := store.ListPollSlots(a.orm.WithContext(r.Context()), nil, clubIDs)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -122,7 +156,7 @@ func (a *App) handleListPolls(w http.ResponseWriter, r *http.Request, u *User) {
 		}
 	}
 
-	voteRecords, err := store.ListVotes(a.orm.WithContext(r.Context()))
+	voteRecords, err := store.ListVotes(a.orm.WithContext(r.Context()), clubIDs)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -167,6 +201,11 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 	if !readJSON(w, r, &req) {
 		return
 	}
+	clubID := u.ClubID()
+	if clubID == 0 {
+		httpError(w, http.StatusConflict, "you are not in a club yet")
+		return
+	}
 	req.Title = strings.TrimSpace(req.Title)
 	if req.Title == "" {
 		req.Title = "Padel?"
@@ -186,6 +225,24 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		}
 	}
 
+	clubLocations, err := a.clubLocations(r, clubID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if len(clubLocations) != 0 {
+		allowed := make(map[string]bool, len(clubLocations))
+		for _, location := range clubLocations {
+			allowed[location] = true
+		}
+		for _, s := range req.Slots {
+			if !allowed[scraper.NormalizeLocationName(s.Location)] {
+				httpError(w, http.StatusForbidden, "that venue does not belong to this club")
+				return
+			}
+		}
+	}
+
 	slots := make([]store.PollSlotRecord, len(req.Slots))
 	for i, s := range req.Slots {
 		currency := s.Currency
@@ -199,9 +256,9 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 	}
 	var pollID int64
 
-	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+	err = a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		var err error
-		pollID, err = store.CreatePoll(tx, u.ID, req.Title, slots)
+		pollID, err = store.CreatePoll(tx, clubID, u.ID, req.Title, slots)
 		if err != nil {
 			return err
 		}
@@ -210,7 +267,7 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 			return err
 		}
 		payload, _ := json.Marshal(poll)
-		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", payload, 0)
+		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", payload, 0, clubID)
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -227,7 +284,7 @@ func (a *App) handleCreatePoll(w http.ResponseWriter, r *http.Request, u *User) 
 	// notification must not fail the poll either — it is already committed and
 	// broadcast over SSE.
 	go func() {
-		if err := a.notifyOnNewPoll(req.Origin); err != nil {
+		if err := a.notifyOnNewPoll(req.Origin, clubID); err != nil {
 			log.Printf("notify on new poll %d: %v", pollID, err)
 		}
 	}()
@@ -257,13 +314,14 @@ func (a *App) wantsNotification(userID int64, key string) bool {
 	return mergeNotifications(stored)[key]
 }
 
-func (a *App) notifyOnNewPoll(origin string) error {
-	allUsers, err := store.ListUsers(a.store.ORM)
+// notifyOnNewPoll mails the poll's own club — never the whole deployment.
+func (a *App) notifyOnNewPoll(origin string, clubID int64) error {
+	members, err := store.ListClubMembers(a.store.ORM, clubID)
 	if err != nil {
 		return err
 	}
 
-	for _, u := range allUsers {
+	for _, u := range members {
 		if a.wantsNotification(u.ID, "poll_created") {
 			fmt.Printf("send to: %s\n", u.Email)
 			link := template.HTMLEscapeString(a.linkOrigin(origin)) + "/polls"
@@ -313,6 +371,10 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request, u *User) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	clubID, ok := a.pollClub(w, r, u, pollID)
+	if !ok {
+		return
+	}
 	if status != "active" {
 		httpError(w, http.StatusConflict, "poll is closed")
 		return
@@ -324,13 +386,13 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request, u *User) {
 			if err := store.DeleteVote(tx, req.PollSlotID, u.ID); err != nil {
 				return err
 			}
-			return store.AppendSync(tx, "vote", voteEntityID, "delete", nil, 0)
+			return store.AppendSync(tx, "vote", voteEntityID, "delete", nil, 0, clubID)
 		}
 		if err := store.UpsertVote(tx, req.PollSlotID, u.ID, *req.Vote); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(syncVote{PollSlotID: req.PollSlotID, UserID: u.ID, Name: u.Name, Vote: *req.Vote})
-		return store.AppendSync(tx, "vote", voteEntityID, "upsert", payload, 0)
+		return store.AppendSync(tx, "vote", voteEntityID, "upsert", payload, 0, clubID)
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -364,6 +426,10 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	clubID, ok := a.pollClub(w, r, u, pollID)
+	if !ok {
+		return
+	}
 	if poll.CreatorID != u.ID && !u.IsAdmin {
 		httpError(w, http.StatusForbidden, "only the poll creator can close it")
 		return
@@ -393,7 +459,7 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 			return err
 		}
 		payload, _ := json.Marshal(poll)
-		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", payload, 0)
+		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "upsert", payload, 0, clubID)
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -426,7 +492,7 @@ func (a *App) handleClosePoll(w http.ResponseWriter, r *http.Request, u *User) {
 // this poll are not mailed at all. Mirrors notifyOnNewPoll — best effort, a
 // failed send never fails the request.
 func (a *App) notifyOnSlotBooked(origin string, poll store.PollRecord, winningSlotID int64) error {
-	slots, err := store.ListPollSlots(a.store.ORM, &poll.ID)
+	slots, err := store.ListPollSlots(a.store.ORM, &poll.ID, nil)
 	if err != nil {
 		return err
 	}
@@ -541,7 +607,7 @@ func (a *App) handleDeletePoll(w http.ResponseWriter, r *http.Request, u *User) 
 		if err := store.DeletePoll(tx, pollID); err != nil {
 			return err
 		}
-		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "delete", nil, 0)
+		return store.AppendSync(tx, "poll", strconv.FormatInt(pollID, 10), "delete", nil, 0, poll.ClubID)
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")

@@ -67,6 +67,7 @@ type inviteModel struct {
 	Disabled   bool       `gorm:"column:disabled;not null;default:false"`
 	Uses       int        `gorm:"column:uses;not null;default:0"`
 	ClubID     *int64     `gorm:"column:club_id"`
+	Club       *clubModel `gorm:"foreignKey:ClubID;references:ID"`
 	UsedByUser *userModel `gorm:"foreignKey:UsedBy;references:ID"`
 }
 

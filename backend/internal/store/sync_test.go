@@ -18,7 +18,7 @@ func TestSyncLogVisibilityAndReplay(t *testing.T) {
 	}{
 		{"public", 0}, {"user-7", 7}, {"admin", -1}, {"user-8", 8},
 	} {
-		if err := AppendSync(storage.ORM, "test", event.id, "upsert", []byte(`{"ok":true}`), event.visibleTo); err != nil {
+		if err := AppendSync(storage.ORM, "test", event.id, "upsert", []byte(`{"ok":true}`), event.visibleTo, 0); err != nil {
 			t.Fatalf("append %s event: %v", event.id, err)
 		}
 	}
@@ -27,19 +27,19 @@ func TestSyncLogVisibilityAndReplay(t *testing.T) {
 		t.Fatalf("max sync id = %d, error = %v; want 4", maxID, err)
 	}
 
-	all, err := ReadSyncLog(storage.ORM, 0, 0, false, false)
+	all, err := ReadSyncLog(storage.ORM, 0, 0, false, nil, false)
 	if err != nil || len(all) != 4 {
 		t.Fatalf("dispatcher events = %#v, error = %v", all, err)
 	}
-	user, err := ReadSyncLog(storage.ORM, 0, 7, false, true)
+	user, err := ReadSyncLog(storage.ORM, 0, 7, false, nil, true)
 	if err != nil || len(user) != 2 || user[0].EntityID != "public" || user[1].EntityID != "user-7" {
 		t.Fatalf("user events = %#v, error = %v", user, err)
 	}
-	admin, err := ReadSyncLog(storage.ORM, 0, 99, true, true)
+	admin, err := ReadSyncLog(storage.ORM, 0, 99, true, nil, true)
 	if err != nil || len(admin) != 2 || admin[0].EntityID != "public" || admin[1].EntityID != "admin" {
 		t.Fatalf("admin events = %#v, error = %v", admin, err)
 	}
-	resumed, err := ReadSyncLog(storage.ORM, 2, 0, false, false)
+	resumed, err := ReadSyncLog(storage.ORM, 2, 0, false, nil, false)
 	if err != nil || len(resumed) != 2 || resumed[0].ID != 3 {
 		t.Fatalf("resumed events = %#v, error = %v", resumed, err)
 	}

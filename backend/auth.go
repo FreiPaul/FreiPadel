@@ -25,10 +25,19 @@ const (
 )
 
 type User struct {
-	ID      int64  `json:"id"`
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	IsAdmin bool   `json:"is_admin"`
+	ID           int64  `json:"id"`
+	Email        string `json:"email"`
+	Name         string `json:"name"`
+	IsAdmin      bool   `json:"is_admin"`
+	ActiveClubID *int64 `json:"active_club_id"`
+}
+
+// ClubID returns the caller's active club, or 0 when they belong to none.
+func (u *User) ClubID() int64 {
+	if u.ActiveClubID == nil {
+		return 0
+	}
+	return *u.ActiveClubID
 }
 
 type Me struct {
@@ -68,7 +77,88 @@ func (a *App) userFromRequest(r *http.Request) (*User, error) {
 	if err != nil {
 		return nil, errors.New("invalid session")
 	}
-	return &User{ID: record.ID, Email: record.Email, Name: record.Name, IsAdmin: record.IsAdmin}, nil
+	return &User{
+		ID: record.ID, Email: record.Email, Name: record.Name,
+		IsAdmin: record.IsAdmin, ActiveClubID: record.ActiveClubID,
+	}, nil
+}
+
+// requireClubMember is requireAuth plus membership of the club named by the
+// {id} path value. Global admins are not implicitly members: club content is
+// scoped by membership, and club administration has its own routes.
+func (a *App) requireClubMember(next func(w http.ResponseWriter, r *http.Request, u *User, clubID int64)) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request, u *User) {
+		clubID, ok := a.clubFromPath(w, r)
+		if !ok {
+			return
+		}
+		member, err := store.IsClubMember(a.orm.WithContext(r.Context()), clubID, u.ID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if !member {
+			httpError(w, http.StatusForbidden, "not a member of this club")
+			return
+		}
+		next(w, r, u, clubID)
+	})
+}
+
+// requireClubManager gates the club's administration: its owner, or any global
+// admin.
+func (a *App) requireClubManager(next func(w http.ResponseWriter, r *http.Request, u *User, clubID int64)) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request, u *User) {
+		clubID, ok := a.clubFromPath(w, r)
+		if !ok {
+			return
+		}
+		if !a.managesClub(r, u, clubID) {
+			httpError(w, http.StatusForbidden, "not allowed to manage this club")
+			return
+		}
+		next(w, r, u, clubID)
+	})
+}
+
+// requireInviteManager admits global admins and anyone who owns a club: the
+// individual handlers then check the specific club each invite belongs to.
+func (a *App) requireInviteManager(next func(w http.ResponseWriter, r *http.Request, u *User)) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request, u *User) {
+		if !u.IsAdmin {
+			owned, err := store.ListOwnedClubIDs(a.orm.WithContext(r.Context()), u.ID)
+			if err != nil {
+				httpError(w, http.StatusInternalServerError, "database error")
+				return
+			}
+			if len(owned) == 0 {
+				httpError(w, http.StatusForbidden, "admin only")
+				return
+			}
+		}
+		next(w, r, u)
+	})
+}
+
+func (a *App) managesClub(r *http.Request, u *User, clubID int64) bool {
+	if u.IsAdmin {
+		return true
+	}
+	club, err := store.FindClub(a.orm.WithContext(r.Context()), clubID)
+	return err == nil && club.OwnerID == u.ID
+}
+
+func (a *App) clubFromPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	clubID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || clubID <= 0 {
+		httpError(w, http.StatusBadRequest, "invalid club id")
+		return 0, false
+	}
+	if _, err := store.FindClub(a.orm.WithContext(r.Context()), clubID); err != nil {
+		httpError(w, http.StatusNotFound, "club not found")
+		return 0, false
+	}
+	return clubID, true
 }
 
 func (a *App) createSession(w http.ResponseWriter, userID int64) error {
@@ -142,6 +232,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	expires := time.Now().UTC().Add(sessionLifetime)
 	var created store.UserRecord
 	var firstUser bool
+	var clubID int64
 	var responseStatus int
 	var responseMessage string
 	accountConflict := false
@@ -160,18 +251,11 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			if invite.Disabled {
-				responseStatus, responseMessage = http.StatusForbidden, "this invite link has been disabled"
-				return errors.New(responseMessage)
+			if problem := inviteProblem(invite, req.Email); problem != "" {
+				responseStatus, responseMessage = http.StatusForbidden, problem
+				return errors.New(problem)
 			}
-			if invite.Kind != "group" && invite.UsedByID != nil {
-				responseStatus, responseMessage = http.StatusForbidden, "this invite link has already been used"
-				return errors.New(responseMessage)
-			}
-			if invite.Kind == "email" && (invite.Email == nil || req.Email != *invite.Email) {
-				responseStatus, responseMessage = http.StatusForbidden, "this invite belongs to another email"
-				return errors.New(responseMessage)
-			}
+			clubID = invite.ClubID
 		}
 		reserved, err := store.PendingEmailChangeEmailExists(tx, req.Email, 0)
 		if err != nil {
@@ -190,10 +274,19 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		if err := store.CreateDefaultSettings(tx, created.ID); err != nil {
 			return err
 		}
-		memberPayload, _ := json.Marshal(syncMember{ID: created.ID, Name: created.Name, IsAdmin: created.IsAdmin})
-		if err := store.AppendSync(tx, "user", strconv.FormatInt(created.ID, 10), "upsert", memberPayload, 0); err != nil {
+		// The very first account has no invite to tell it which club to join,
+		// so it founds one. Existing deployments got theirs from migration 6.
+		if firstUser {
+			club, err := store.CreateClub(tx, defaultClubName, created.ID)
+			if err != nil {
+				return err
+			}
+			clubID = club.ID
+		}
+		if err := a.joinClub(tx, created.ID, clubID); err != nil {
 			return err
 		}
+		created.ActiveClubID = &clubID
 		if !firstUser {
 			if err := store.RedeemInvite(tx, req.InviteToken, created.ID); err != nil {
 				return err
@@ -203,7 +296,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			payload, _ := json.Marshal(inviteFromRecord(invite))
-			if err := store.AppendSync(tx, "invite", invite.Token, "upsert", payload, visibleToAdmins); err != nil {
+			if err := store.AppendSync(tx, "invite", invite.Token, "upsert", payload, visibleToAdmins, clubID); err != nil {
 				return err
 			}
 		}
@@ -224,7 +317,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	a.hub.notify()
 	a.setSessionCookie(w, token, expires)
 	writeJSON(w, http.StatusCreated, Me{
-		User:           User{ID: created.ID, Email: created.Email, Name: created.Name, IsAdmin: created.IsAdmin},
+		User: User{
+			ID: created.ID, Email: created.Email, Name: created.Name,
+			IsAdmin: created.IsAdmin, ActiveClubID: created.ActiveClubID,
+		},
 		EmailerEnabled: a.emailer.Configured()},
 	)
 
@@ -248,7 +344,10 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
-	u := User{ID: record.ID, Email: record.Email, Name: record.Name, IsAdmin: record.IsAdmin}
+	u := User{
+		ID: record.ID, Email: record.Email, Name: record.Name,
+		IsAdmin: record.IsAdmin, ActiveClubID: record.ActiveClubID,
+	}
 
 	if err := a.createSession(w, u.ID); err != nil {
 		httpError(w, http.StatusInternalServerError, "could not create session")

@@ -10,6 +10,7 @@ import (
 
 type PollRecord struct {
 	ID            int64
+	ClubID        int64
 	Title         string
 	CreatorID     int64
 	CreatorName   string
@@ -38,11 +39,18 @@ type VoteRecord struct {
 	Vote       bool
 }
 
-func ListPolls(db *gorm.DB) ([]PollRecord, error) {
-	models, err := gorm.G[pollModel](db).
-		Preload("Creator", nil).
+// ListPolls returns the polls of the given clubs, newest first. An empty
+// clubIDs slice returns nothing — a user in no club sees no polls.
+func ListPolls(db *gorm.DB, clubIDs []int64) ([]PollRecord, error) {
+	if len(clubIDs) == 0 {
+		return []PollRecord{}, nil
+	}
+	var models []pollModel
+	err := db.Model(&pollModel{}).
+		Preload("Creator").
+		Where("club_id IN ?", clubIDs).
 		Order("created_at DESC").
-		Find(db.Statement.Context)
+		Find(&models).Error
 	if err != nil {
 		return nil, err
 	}
@@ -68,10 +76,17 @@ func FindPoll(db *gorm.DB, id int64) (PollRecord, error) {
 	return pollRecord(model), nil
 }
 
-func ListPollSlots(db *gorm.DB, pollID *int64) ([]PollSlotRecord, error) {
+// ListPollSlots returns the slots of one poll, or — when pollID is nil — of
+// every poll in clubIDs.
+func ListPollSlots(db *gorm.DB, pollID *int64, clubIDs []int64) ([]PollSlotRecord, error) {
 	query := db.Model(&pollSlotModel{}).Order("date, time, location, duration_minutes")
 	if pollID != nil {
 		query = query.Where("poll_id = ?", *pollID)
+	} else {
+		if len(clubIDs) == 0 {
+			return []PollSlotRecord{}, nil
+		}
+		query = query.Where("poll_id IN (SELECT id FROM polls WHERE club_id IN ?)", clubIDs)
 	}
 	var models []pollSlotModel
 	if err := query.Find(&models).Error; err != nil {
@@ -84,10 +99,20 @@ func ListPollSlots(db *gorm.DB, pollID *int64) ([]PollSlotRecord, error) {
 	return slots, nil
 }
 
-func ListVotes(db *gorm.DB) ([]VoteRecord, error) {
-	models, err := gorm.G[voteModel](db).
-		Preload("User", nil).
-		Find(db.Statement.Context)
+// ListVotes returns every vote cast on polls belonging to clubIDs.
+func ListVotes(db *gorm.DB, clubIDs []int64) ([]VoteRecord, error) {
+	if len(clubIDs) == 0 {
+		return []VoteRecord{}, nil
+	}
+	var models []voteModel
+	err := db.Model(&voteModel{}).
+		Preload("User").
+		Where(`poll_slot_id IN (
+			SELECT poll_slots.id FROM poll_slots
+			JOIN polls ON polls.id = poll_slots.poll_id
+			WHERE polls.club_id IN ?
+		)`, clubIDs).
+		Find(&models).Error
 	if err != nil {
 		return nil, err
 	}
@@ -120,8 +145,8 @@ func ListVotesForPoll(db *gorm.DB, pollID int64) ([]VoteRecord, error) {
 	return votes, nil
 }
 
-func CreatePoll(db *gorm.DB, creatorID int64, title string, slots []PollSlotRecord) (int64, error) {
-	poll := pollModel{CreatorID: creatorID, Title: title}
+func CreatePoll(db *gorm.DB, clubID, creatorID int64, title string, slots []PollSlotRecord) (int64, error) {
+	poll := pollModel{ClubID: &clubID, CreatorID: creatorID, Title: title}
 	if err := db.Create(&poll).Error; err != nil {
 		return 0, err
 	}
@@ -195,8 +220,12 @@ func pollSlotRecord(model pollSlotModel) PollSlotRecord {
 }
 
 func pollRecord(model pollModel) PollRecord {
+	var clubID int64
+	if model.ClubID != nil {
+		clubID = *model.ClubID
+	}
 	return PollRecord{
-		ID: model.ID, Title: model.Title, CreatorID: model.CreatorID,
+		ID: model.ID, ClubID: clubID, Title: model.Title, CreatorID: model.CreatorID,
 		CreatorName: model.Creator.Name, Status: model.Status,
 		WinningSlotID: model.WinningSlotID, CreatedAt: model.CreatedAt, ClosedAt: model.ClosedAt,
 	}
