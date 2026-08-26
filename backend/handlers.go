@@ -596,12 +596,21 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	// A refused invite still names its club: someone who already redeemed it
+	// needs to be told they are in that club rather than that the link is
+	// spent. This exposes no more than the token's own existence already does.
 	if invite.Disabled {
-		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "disabled"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid": false, "reason": "disabled",
+			"club_id": invite.ClubID, "club_name": invite.ClubName,
+		})
 		return
 	}
 	if invite.Kind != "group" && invite.UsedByID != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "used"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid": false, "reason": "used",
+			"club_id": invite.ClubID, "club_name": invite.ClubName,
+		})
 		return
 	}
 	email := ""

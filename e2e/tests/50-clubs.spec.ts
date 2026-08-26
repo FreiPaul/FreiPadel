@@ -127,6 +127,22 @@ test.describe.serial('clubs', () => {
 			await waitForSync(page);
 			await expect(clubSwitcher(page)).toContainText(CREW);
 
+			// Bob still has the default 19:00-21:00 window, which hides Second
+			// Club's 18:00 slots entirely. Widen it so what follows measures the
+			// club's venue filter rather than his own.
+			const widened = await page.request.put('/api/settings', {
+				data: {
+					weekdays: [0, 1, 2, 3, 4, 5, 6],
+					time_start: '07:00',
+					time_end: '22:00',
+					days_ahead: 21,
+					min_duration: 60,
+					locations: [],
+					notifications: { poll_created: true, slot_booked: true }
+				}
+			});
+			expect(widened.ok()).toBeTruthy();
+
 			// Köln Crew plays at Second Club only.
 			const res = await page.request.get('/api/slots');
 			const crewSlots = ((await res.json()) as { slots: { location: string }[] }).slots;

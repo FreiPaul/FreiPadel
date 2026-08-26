@@ -46,13 +46,13 @@
 				const res = await api.get<{
 					valid: boolean;
 					reason?: string;
-					email: string;
-					club_id: number;
-					club_name: string;
+					email?: string;
+					club_id?: number;
+					club_name?: string;
 				}>(`/api/invites/${token}/check`);
 				inviteValid = res.valid;
 				inviteReason = res.reason ?? '';
-				email = res.email;
+				email = res.email ?? '';
 				clubId = res.club_id ?? null;
 				clubName = res.club_name ?? '';
 				if (res.email && res.email.length > 0) emailInvite = true;
@@ -149,7 +149,18 @@
 			</Card.Description>
 		</Card.Header>
 		<Card.Content>
-			{#if blocked}
+			{#if alreadyMember && signedIn}
+				<!-- Redeeming a link you already used is not an error: it just
+				     means you are in. This comes before `blocked` so a spent
+				     one-time link reads as "you are already in" for the person
+				     who spent it. -->
+				<div class="grid gap-4">
+					<p class="text-sm text-muted-foreground">
+						You are already in {clubName}, signed in as {signedIn.name}.
+					</p>
+					<Button href="/polls" class="w-full">Go to {clubName}</Button>
+				</div>
+			{:else if blocked}
 				<p class="text-sm text-destructive">
 					{#if inviteReason === 'used'}
 						This invite link has already been used. Ask for a new one.
@@ -165,22 +176,15 @@
 			{:else if signedIn && !needsSetup}
 				<!-- Already signed in: accepting is all that is left to do. -->
 				<div class="grid gap-4">
-					{#if alreadyMember}
-						<p class="text-sm text-muted-foreground">
-							You are already in {clubName}, signed in as {signedIn.name}.
-						</p>
-						<Button href="/polls" class="w-full">Go to {clubName}</Button>
-					{:else}
-						<p class="text-sm text-muted-foreground">
-							Signed in as <strong>{signedIn.name}</strong> ({signedIn.email}).
-						</p>
-						{#if error}
-							<p class="text-sm text-destructive">{error}</p>
-						{/if}
-						<Button onclick={join} disabled={loading} class="w-full">
-							{loading ? 'Joining…' : `Join ${clubName}`}
-						</Button>
+					<p class="text-sm text-muted-foreground">
+						Signed in as <strong>{signedIn.name}</strong> ({signedIn.email}).
+					</p>
+					{#if error}
+						<p class="text-sm text-destructive">{error}</p>
 					{/if}
+					<Button onclick={join} disabled={loading} class="w-full">
+						{loading ? 'Joining…' : `Join ${clubName}`}
+					</Button>
 					<a href="/login?redirect_to={encodeURIComponent(page.url.pathname + page.url.search)}"
 						class="text-center text-sm text-muted-foreground underline">
 						Use a different account

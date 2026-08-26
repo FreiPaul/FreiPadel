@@ -38,6 +38,8 @@ test.describe.serial('bootstrap', () => {
 
 		// Only admins get the administration tab.
 		await expect(page.getByRole('link', { name: 'Administration' })).toBeVisible();
+		// The switcher names the club the registration founded.
+		await expect(page.getByTestId('club-switcher')).toContainText('All');
 
 		expect(
 			rows<{ email: string; name: string; is_admin: number }>(
@@ -71,7 +73,7 @@ test.describe.serial('bootstrap', () => {
 
 	// A fresh deployment has no admin to own a club when the migration runs, so
 	// the first registration founds "All" instead.
-	test('the first account founds the All club and lands in it', async ({ page }) => {
+	test('the first account founds the All club and lands in it', () => {
 		const club = one<{ id: number; name: string; owner_id: number; locations: string }>(
 			'SELECT id, name, owner_id, locations FROM clubs'
 		);
@@ -83,11 +85,6 @@ test.describe.serial('bootstrap', () => {
 		expect(
 			one<{ active_club_id: number }>('SELECT active_club_id FROM users WHERE email = ?', personas.alice.email)
 		).toEqual({ active_club_id: club!.id });
-
-		// The switcher names the club she is in.
-		await page.goto('/slots');
-		await waitForSync(page);
-		await expect(page.getByRole('button', { name: 'All' })).toBeVisible();
 
 		writeScratch({ allClubId: club!.id });
 	});

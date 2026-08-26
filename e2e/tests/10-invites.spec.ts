@@ -173,7 +173,12 @@ test.describe.serial('invites', () => {
 		});
 		// Still valid for the next person.
 		const res = await page.request.get(`/api/invites/${token}/check`);
-		expect(await res.json()).toEqual({ valid: true, email: '' });
+		expect(await res.json()).toEqual({
+			valid: true,
+			email: '',
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		await context.close();
 	});
@@ -215,7 +220,14 @@ test.describe.serial('invites', () => {
 		const token = need('singleInviteToken');
 
 		const check = await request.get(`/api/invites/${token}/check`);
-		expect(await check.json()).toEqual({ valid: false, reason: 'used' });
+		// A refused invite still names its club, so someone who already redeemed
+		// it can be told they are in rather than that the link is spent.
+		expect(await check.json()).toEqual({
+			valid: false,
+			reason: 'used',
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		await page.goto(`/register?token=${token}`);
 		await expect(page.getByText('This invite link has already been used')).toBeVisible();
@@ -241,7 +253,12 @@ test.describe.serial('invites', () => {
 			expect(one('SELECT disabled FROM invites WHERE token = ?', token)).toEqual({ disabled: 1 });
 
 			const check = await request.get(`/api/invites/${token}/check`);
-			expect(await check.json()).toEqual({ valid: false, reason: 'disabled' });
+			expect(await check.json()).toEqual({
+				valid: false,
+				reason: 'disabled',
+				club_id: need('allClubId'),
+				club_name: 'All'
+			});
 
 			const res = await request.post('/api/auth/register', {
 				data: { invite_token: token, email: 'nope@e2e.test', name: 'Nope', password: 'nope-1234' }
