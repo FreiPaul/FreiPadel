@@ -200,6 +200,84 @@ var schemaMigrations = []schemaMigration{
 			return err
 		},
 	},
+	{
+		Version: 6,
+		Name:    "add clubs, memberships and club scoping",
+		Up: func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`
+				CREATE TABLE IF NOT EXISTS clubs (
+					id         INTEGER PRIMARY KEY AUTOINCREMENT,
+					name       TEXT NOT NULL,
+					owner_id   INTEGER NOT NULL REFERENCES users(id),
+					locations  TEXT NOT NULL DEFAULT '[]',
+					created_at TEXT NOT NULL DEFAULT (datetime('now'))
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_clubs_name ON clubs(name COLLATE NOCASE);
+
+				CREATE TABLE IF NOT EXISTS club_members (
+					club_id   INTEGER NOT NULL REFERENCES clubs(id) ON DELETE CASCADE,
+					user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+					joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+					PRIMARY KEY (club_id, user_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_club_members_user ON club_members(user_id);
+			`); err != nil {
+				return fmt.Errorf("create club tables: %w", err)
+			}
+
+			// SQLite cannot add a NOT NULL column without a default, so these
+			// stay nullable; the handlers treat them as required.
+			columns := []struct{ table, column, statement string }{
+				{"users", "active_club_id",
+					`ALTER TABLE users ADD COLUMN active_club_id INTEGER REFERENCES clubs(id)`},
+				{"polls", "club_id",
+					`ALTER TABLE polls ADD COLUMN club_id INTEGER REFERENCES clubs(id)`},
+				{"invites", "club_id",
+					`ALTER TABLE invites ADD COLUMN club_id INTEGER REFERENCES clubs(id)`},
+				{"sync_log", "club_id",
+					`ALTER TABLE sync_log ADD COLUMN club_id INTEGER`},
+			}
+			for _, column := range columns {
+				if err := addColumnIfMissing(tx, column.table, column.column, column.statement); err != nil {
+					return err
+				}
+			}
+
+			// Everyone who already has an account joins one "All" club owned by
+			// the first admin. A deployment with no users yet has nobody to own
+			// it; there the first registration creates the club instead.
+			var ownerID int64
+			err := tx.QueryRow(`SELECT id FROM users ORDER BY is_admin DESC, id LIMIT 1`).Scan(&ownerID)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("find club owner: %w", err)
+			}
+
+			result, err := tx.Exec(`INSERT INTO clubs (name, owner_id) VALUES ('All', ?)`, ownerID)
+			if err != nil {
+				return fmt.Errorf("create the All club: %w", err)
+			}
+			clubID, err := result.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("read the All club id: %w", err)
+			}
+
+			backfills := []string{
+				`INSERT INTO club_members (club_id, user_id) SELECT ?, id FROM users`,
+				`UPDATE users SET active_club_id = ?`,
+				`UPDATE polls SET club_id = ?`,
+				`UPDATE invites SET club_id = ?`,
+			}
+			for _, statement := range backfills {
+				if _, err := tx.Exec(statement, clubID); err != nil {
+					return fmt.Errorf("backfill the All club: %w", err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 var latestSchemaVersion = schemaMigrations[len(schemaMigrations)-1].Version
