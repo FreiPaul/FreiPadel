@@ -1,10 +1,12 @@
 import {
   api,
+  type Club,
   type Invite,
   type Settings,
   type SlotGroup,
   type User,
 } from "./api";
+import { auth } from "./auth.svelte";
 
 // Client side of the sync engine (see backend/sync.go). The UI renders
 // exclusively from this normalized store: it is hydrated once via
@@ -27,6 +29,7 @@ export interface SyncPollSlot {
 
 export interface SyncPoll {
   id: number;
+  club_id: number;
   title: string;
   creator_id: number;
   creator_name: string;
@@ -52,12 +55,16 @@ export interface SyncMember {
 
 interface Bootstrap {
   sync_id: number;
+  clubs: Club[];
+  active_club_id: number | null;
   users: SyncMember[];
   settings: Settings;
   polls: SyncPoll[];
   votes: SyncVote[];
-  invites: Invite[] | null; // null for non-admins
-  slot_keys: string[];
+  invites: Invite[] | null; // null unless you manage a club
+  // Slot keys of every club I am in, keyed by club id. Only the keys are
+  // synced; the slots themselves are fetched per club by /api/slots.
+  slot_keys: Record<string, string[]>;
   last_fetched_at: string;
   scraping: boolean;
 }
@@ -73,14 +80,17 @@ interface Delta {
 export const sync = $state({
   ready: false, // bootstrap done
   live: false, // SSE stream connected
+  // Every club I belong to, and which one the app is currently showing.
+  clubs: {} as Record<number, Club>,
+  activeClubId: null as number | null,
   polls: {} as Record<number, SyncPoll>,
   votes: {} as Record<string, SyncVote>, // key: `${poll_slot_id}|${user_id}`
   members: {} as Record<number, SyncMember>,
   invites: {} as Record<string, Invite>, // key: token; admins only
   settings: null as Settings | null,
-  // `${date}|${time}|${duration}|${location}` keys of the latest scrape,
-  // used to derive whether a poll slot is still bookable.
-  slotKeys: {} as Record<string, true>,
+  // `${date}|${time}|${duration}|${location}` keys of the latest scrape, per
+  // club, used to derive whether a poll slot is still bookable.
+  slotKeys: {} as Record<number, Record<string, true>>,
   lastFetchedAt: "",
   scraping: false,
   slotsVersion: 0, // bumped per scrape snapshot — invalidates the slotGroups cache
@@ -149,6 +159,8 @@ export function stopSync() {
 async function bootstrap() {
   const b = await api.get<Bootstrap>("/api/sync/bootstrap");
   syncId = b.sync_id;
+  sync.clubs = Object.fromEntries(b.clubs.map((c) => [c.id, c]));
+  sync.activeClubId = b.active_club_id;
   sync.polls = Object.fromEntries(b.polls.map((p) => [p.id, p]));
   sync.votes = Object.fromEntries(
     b.votes.map((v) => [voteKey(v.poll_slot_id, v.user_id), v]),
@@ -157,7 +169,10 @@ async function bootstrap() {
   sync.invites = Object.fromEntries((b.invites ?? []).map((i) => [i.token, i]));
   sync.settings = b.settings;
   sync.slotKeys = Object.fromEntries(
-    b.slot_keys.map((k) => [k, true as const]),
+    Object.entries(b.slot_keys ?? {}).map(([clubId, keys]) => [
+      Number(clubId),
+      Object.fromEntries(keys.map((k) => [k, true as const])),
+    ]),
   );
   sync.lastFetchedAt = b.last_fetched_at;
   sync.scraping = b.scraping;
@@ -165,11 +180,12 @@ async function bootstrap() {
   sync.ready = true;
   debug("bootstrap", {
     sync_id: b.sync_id,
+    clubs: b.clubs.length,
+    active_club_id: b.active_club_id,
     polls: b.polls.length,
     votes: b.votes.length,
     users: b.users.length,
     invites: b.invites?.length ?? 0,
-    slot_keys: b.slot_keys.length,
   });
 
   lastHeard = Date.now();
@@ -263,9 +279,35 @@ function applyDelta(d: Delta) {
     case "settings":
       sync.settings = d.payload as Settings;
       break;
+    case "club": {
+      if (d.action === "delete") delete sync.clubs[Number(d.entity_id)];
+      else {
+        const c = d.payload as Club;
+        // is_owner is per reader, so a broadcast cannot carry it.
+        sync.clubs[c.id] = {
+          ...c,
+          is_owner: c.owner_id === auth.me?.user.id,
+        };
+      }
+      break;
+    }
+    // My club membership changed. The server-side subscriber is keyed on the
+    // clubs I was in when the stream opened, so re-bootstrap and reconnect
+    // rather than trying to patch the store in place.
+    case "me": {
+      debug("membership changed — re-bootstrapping");
+      void bootstrap()
+        .then(() => connect())
+        .catch(() => {});
+      break;
+    }
     case "slots": {
-      const p = d.payload as { keys: string[] | null; last_fetched_at: string };
-      sync.slotKeys = Object.fromEntries(
+      const p = d.payload as {
+        club_id: number;
+        keys: string[] | null;
+        last_fetched_at: string;
+      };
+      sync.slotKeys[p.club_id] = Object.fromEntries(
         (p.keys ?? []).map((k) => [k, true as const]),
       );
       sync.lastFetchedAt = p.last_fetched_at;
@@ -287,11 +329,41 @@ export function slotVotes(slotId: number): SyncVote[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// Whether a poll slot is still bookable according to the latest scrape.
-export function slotAvailable(s: SyncPollSlot): boolean {
-  return (
-    `${s.date}|${s.time}|${s.duration_minutes}|${s.location}` in sync.slotKeys
-  );
+// Whether a poll slot is still bookable according to the latest scrape of the
+// club it belongs to.
+export function slotAvailable(s: SyncPollSlot, clubId: number): boolean {
+  const keys = sync.slotKeys[clubId];
+  if (!keys) return false;
+  return `${s.date}|${s.time}|${s.duration_minutes}|${s.location}` in keys;
+}
+
+// The clubs I am in, for the switcher.
+export function myClubs(): Club[] {
+  return Object.values(sync.clubs).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Polls of one club, which is all any page ever renders.
+export function clubPolls(clubId: number | null): SyncPoll[] {
+  if (clubId === null) return [];
+  return Object.values(sync.polls).filter((p) => p.club_id === clubId);
+}
+
+// The switcher badge: how many polls in this club are still open.
+export function activePollCount(clubId: number): number {
+  return clubPolls(clubId).filter((p) => p.status === "active").length;
+}
+
+// Switch clubs. The server records it on the account, so every device follows.
+export async function switchClub(clubId: number): Promise<void> {
+  if (sync.activeClubId === clubId) return;
+  const previous = sync.activeClubId;
+  sync.activeClubId = clubId; // optimistic; the "me" delta confirms
+  try {
+    await api.post(`/api/clubs/${clubId}/activate`);
+  } catch (err) {
+    sync.activeClubId = previous;
+    throw err;
+  }
 }
 
 let slotsFetchedFor = ""; // cache key of the last /api/slots fetch
@@ -302,7 +374,11 @@ let slotsFetchedFor = ""; // cache key of the last /api/slots fetch
 // synchronously, so the effect reruns when either input changes.
 export async function ensureSlots(): Promise<void> {
   if (!sync.ready) return; // bootstrap bumps slotsVersion and re-triggers
-  const key = `${sync.slotsVersion}|${JSON.stringify(sync.settings)}`;
+  if (sync.activeClubId === null) {
+    sync.slotGroups = [];
+    return;
+  }
+  const key = `${sync.activeClubId}|${sync.slotsVersion}|${JSON.stringify(sync.settings)}`;
   if (key === slotsFetchedFor) return;
   slotsFetchedFor = key; // set before awaiting so concurrent calls dedupe
   try {

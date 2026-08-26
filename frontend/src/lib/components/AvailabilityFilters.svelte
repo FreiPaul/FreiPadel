@@ -22,15 +22,21 @@
         }
     });
 
-    // Locations known from the latest scrape (the location is the last part
-    // of each slot key), plus previously selected ones so they stay visible
-    // even when fully booked right now.
+    // The venues of the club currently being shown, taken from the latest
+    // scrape (the location is the last part of each slot key). Previously
+    // selected ones are kept visible even when fully booked right now — but
+    // only if this club actually plays there.
     const allLocations = $derived.by(() => {
-        const locs = new Set<string>();
-        for (const k of Object.keys(sync.slotKeys)) {
-            locs.add(k.split("|").slice(3).join("|"));
+        const clubId = sync.activeClubId;
+        if (clubId === null) return [];
+        const known = new Set<string>();
+        for (const k of Object.keys(sync.slotKeys[clubId] ?? {})) {
+            known.add(k.split("|").slice(3).join("|"));
         }
-        for (const l of sync.settings?.locations ?? []) locs.add(l);
+        const locs = new Set(known);
+        for (const l of sync.settings?.locations ?? []) {
+            if (known.has(l)) locs.add(l);
+        }
         return [...locs].sort();
     });
 
