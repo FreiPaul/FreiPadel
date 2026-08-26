@@ -1,14 +1,28 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { auth } from '$lib/auth.svelte';
-	import { sync } from '$lib/sync.svelte';
+	import { myClubs, sync } from '$lib/sync.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
+	import * as Tabs from '$lib/components/ui/tabs';
 	import { Separator } from '$lib/components/ui/separator';
 	import { formatTimestamp } from '$lib/format';
 	import { toast } from 'svelte-sonner';
+	import ClubAdmin from '$lib/components/ClubAdmin.svelte';
     import Input from '$lib/components/ui/input/input.svelte';
+
+	// The club switcher links straight to the Clubs tab.
+	let tab = $state(page.url.searchParams.get('tab') === 'clubs' ? 'clubs' : 'invites');
+
+	// Which club a new invite joins people to. Defaults to the active one.
+	const clubs = $derived(myClubs());
+	let inviteClubId = $state<number | null>(null);
+	const targetClubId = $derived(inviteClubId ?? sync.activeClubId);
+	const targetClub = $derived(
+		targetClubId === null ? null : (sync.clubs[targetClubId] ?? null)
+	);
 
 	// Rendered straight from the sync store — no fetching on navigation, and
 	// invites flip to "used" live when a friend registers.
@@ -34,12 +48,17 @@
 			toast.error('Enter an email address');
 			return;
 		}
+		if (targetClubId === null) {
+			toast.error('Pick a club to invite into');
+			return;
+		}
 
 		inviting = true;
 		try {
 			const { token } = await api.post<{ token: string }>('/api/invites', {
 				kind,
 				email: normalizedEmail,
+				club_id: targetClubId,
 				origin: location.origin
 			});
 			if (kind === 'email') {
@@ -86,13 +105,26 @@
 </script>
 
 <div class="flex flex-col gap-6">
+	<div>
+		<h1 class="text-2xl font-semibold tracking-tight">Administration</h1>
+		<p class="text-sm text-muted-foreground">Invite people, and organise them into clubs.</p>
+	</div>
+
+	<Tabs.Root bind:value={tab}>
+		<Tabs.List>
+			<Tabs.Trigger value="invites">Invites</Tabs.Trigger>
+			<Tabs.Trigger value="clubs">Clubs</Tabs.Trigger>
+			<Tabs.Trigger value="members">Members</Tabs.Trigger>
+		</Tabs.List>
+
+		<Tabs.Content value="invites" class="flex flex-col gap-6 pt-4">
 
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<div>
-			<h1 class="text-2xl font-semibold tracking-tight">Invites</h1>
+			<h2 class="text-lg font-medium">Invites</h2>
 			<p class="text-sm text-muted-foreground">
 				One-time links work for a single registration; group links keep working until you disable
-				them.
+				them. Every invite joins the person to one club.
 			</p>
 		</div>
 		<div class="flex gap-2">
@@ -101,6 +133,24 @@
 			</Button>
 			<Button onclick={() => createInvite('group')} disabled={inviting}>+ Group link</Button>
 		</div>
+	</div>
+
+	<!-- Which club new invites join people to. -->
+	<div class="flex flex-wrap items-center gap-2">
+		<span class="text-sm text-muted-foreground">Invite into</span>
+		{#each clubs as club (club.id)}
+			<button
+				type="button"
+				class="rounded-full border px-3 py-1 text-xs transition-colors
+					{club.id === targetClubId ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}"
+				onclick={() => (inviteClubId = club.id)}
+			>
+				{club.name}
+			</button>
+		{/each}
+		{#if targetClub === null}
+			<span class="text-xs text-destructive">Pick a club first.</span>
+		{/if}
 	</div>
 
 	<Card.Root>
@@ -113,6 +163,7 @@
 			{#each invites as invite (invite.token)}
 				<div class="flex flex-wrap items-center gap-2 py-2.5 first:pt-0 last:pb-0">
 					<code class="truncate text-xs text-muted-foreground">…{invite.token.slice(-8)}</code>
+					<Badge variant="outline">{invite.club_name}</Badge>
 					{#if invite.kind === 'group'}
 						<Badge variant="outline">👥 group</Badge>
 						{#if invite.disabled}
@@ -191,21 +242,26 @@
 	</Card.Root>
 	{/if}
 
-	<Separator />
+		</Tabs.Content>
 
-	<div>
-		<h2 class="mb-3 text-lg font-medium">Members ({members.length})</h2>
-		<Card.Root>
-			<Card.Content class="flex flex-col divide-y">
-				{#each members as member (member.id)}
-					<div class="flex items-center gap-2 py-2 first:pt-0 last:pb-0 text-sm">
-						<span>{member.name}</span>
-						{#if member.is_admin}
-							<Badge variant="outline">admin</Badge>
-						{/if}
-					</div>
-				{/each}
-			</Card.Content>
-		</Card.Root>
-	</div>
+		<Tabs.Content value="clubs" class="pt-4">
+			<ClubAdmin />
+		</Tabs.Content>
+
+		<Tabs.Content value="members" class="pt-4">
+			<h2 class="mb-3 text-lg font-medium">Members ({members.length})</h2>
+			<Card.Root>
+				<Card.Content class="flex flex-col divide-y">
+					{#each members as member (member.id)}
+						<div class="flex items-center gap-2 py-2 first:pt-0 last:pb-0 text-sm">
+							<span>{member.name}</span>
+							{#if member.is_admin}
+								<Badge variant="outline">admin</Badge>
+							{/if}
+						</div>
+					{/each}
+				</Card.Content>
+			</Card.Root>
+		</Tabs.Content>
+	</Tabs.Root>
 </div>
