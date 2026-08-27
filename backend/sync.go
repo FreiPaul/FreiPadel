@@ -61,8 +61,9 @@ type syncMember struct {
 	IsAdmin bool   `json:"is_admin"`
 }
 
-// visibleToAdmins marks deltas (e.g. invites) only admins may receive.
-const visibleToAdmins = -1
+// visibleToAdmins marks deltas (e.g. invites) only admins may receive. The
+// store shares the constant so its SQL and canSee cannot drift apart.
+const visibleToAdmins = store.VisibleToAdmins
 
 type syncEvent struct {
 	ID       int64           `json:"id"` // 0 = ephemeral (not persisted, no SSE id)
@@ -82,9 +83,9 @@ type subscriber struct {
 	owned   map[int64]bool // clubs this user owns
 }
 
-// canSee decides what one connection may read. It is the single authority:
-// ReadSyncLog's SQL narrows rows only as a prefilter, so the two can never
-// disagree.
+// canSee decides what one connection may read. It is the single authority;
+// ReadSyncLog's SQL reproduces it so that replaying the log and live fan-out
+// deliver the same rows. Change one and you must change the other.
 //
 // A club-scoped delta reaches that club's members. Global admins are not
 // implicitly members — otherwise every admin client would accumulate polls it
@@ -138,15 +139,19 @@ func (a *App) newSubscriber(r *http.Request, u *User) (subscriber, error) {
 	return sub, nil
 }
 
-func (s subscriber) clubList() []int64 {
-	clubIDs := make([]int64, 0, len(s.clubIDs)+len(s.owned))
-	for clubID := range s.clubIDs {
-		clubIDs = append(clubIDs, clubID)
+// audience describes this subscriber to the store in the same terms canSee
+// uses. Membership and ownership stay separate: they grant different rows.
+func (s subscriber) audience() *store.SyncAudience {
+	return &store.SyncAudience{
+		UserID: s.userID, IsAdmin: s.isAdmin,
+		MemberOf: clubIDList(s.clubIDs), Owns: clubIDList(s.owned),
 	}
-	for clubID := range s.owned {
-		if !s.clubIDs[clubID] {
-			clubIDs = append(clubIDs, clubID)
-		}
+}
+
+func clubIDList(set map[int64]bool) []int64 {
+	clubIDs := make([]int64, 0, len(set))
+	for clubID := range set {
+		clubIDs = append(clubIDs, clubID)
 	}
 	return clubIDs
 }
@@ -251,13 +256,11 @@ func (h *syncHub) broadcastEphemeral(entity, entityID string, payload any) {
 // returns rows of all visibilities (dispatcher); otherwise only rows visible
 // to that subscriber (SSE replay).
 func (h *syncHub) readLog(since int64, sub *subscriber) ([]syncEvent, error) {
-	var userID int64
-	var isAdmin bool
-	var clubIDs []int64
+	var audience *store.SyncAudience
 	if sub != nil {
-		userID, isAdmin, clubIDs = sub.userID, sub.isAdmin, sub.clubList()
+		audience = sub.audience()
 	}
-	records, err := store.ReadSyncLog(h.db, since, userID, isAdmin, clubIDs, sub != nil)
+	records, err := store.ReadSyncLog(h.db, since, audience)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +273,7 @@ func (h *syncHub) readLog(since int64, sub *subscriber) ([]syncEvent, error) {
 		if record.Payload != "" {
 			event.Payload = json.RawMessage(record.Payload)
 		}
-		// The SQL above only narrows; this is what actually decides.
+		// The SQL mirrors canSee, but canSee is still what decides.
 		if sub != nil && !sub.canSee(event.visibleTo, event.clubID) {
 			continue
 		}
