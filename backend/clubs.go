@@ -54,10 +54,26 @@ func parseLocations(stored string) []string {
 // joinClub adds a membership and points the user at it. Used by registration,
 // invite redemption and the admin member editor alike.
 func (a *App) joinClub(tx *gorm.DB, userID, clubID int64) error {
-	if err := store.AddClubMember(tx, clubID, userID); err != nil {
+	if err := a.addMember(tx, clubID, userID); err != nil {
 		return err
 	}
 	return store.SetActiveClub(tx, userID, &clubID)
+}
+
+// addMember is the only way a membership is created, so that no path can add
+// someone without announcing them. The member store on each client is built
+// once at bootstrap and kept current by these deltas; without one, a club's
+// open tabs never learn about anybody who arrives after they connected.
+func (a *App) addMember(tx *gorm.DB, clubID, userID int64) error {
+	if err := store.AddClubMember(tx, clubID, userID); err != nil {
+		return err
+	}
+	user, err := store.FindUserByID(tx, userID)
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(syncMember{ID: user.ID, Name: user.Name, IsAdmin: user.IsAdmin})
+	return store.AppendSync(tx, "user", strconv.FormatInt(user.ID, 10), "upsert", payload, 0, clubID)
 }
 
 // syncMembership tells one user's open connections that their clubs changed.
@@ -194,7 +210,7 @@ func (a *App) handleCreateClub(w http.ResponseWriter, r *http.Request, u *User) 
 		if err != nil {
 			return err
 		}
-		if err := store.AddClubMember(tx, club.ID, ownerID); err != nil {
+		if err := a.addMember(tx, club.ID, ownerID); err != nil {
 			return err
 		}
 		if err := a.syncClub(tx, club.ID); err != nil {
@@ -245,7 +261,7 @@ func (a *App) handleUpdateClub(w http.ResponseWriter, r *http.Request, u *User, 
 			}
 			ownerID = *req.OwnerID
 			// The owner has to be able to see what they own.
-			if err := store.AddClubMember(tx, clubID, ownerID); err != nil {
+			if err := a.addMember(tx, clubID, ownerID); err != nil {
 				return err
 			}
 		}
@@ -346,7 +362,7 @@ func (a *App) handleAddClubMember(w http.ResponseWriter, r *http.Request, u *Use
 		if _, err := store.FindUserByID(tx, req.UserID); err != nil {
 			return errClubMemberUnknown
 		}
-		if err := store.AddClubMember(tx, clubID, req.UserID); err != nil {
+		if err := a.addMember(tx, clubID, req.UserID); err != nil {
 			return err
 		}
 		return a.syncMembership(tx, req.UserID)
