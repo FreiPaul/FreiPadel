@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"maps"
@@ -141,7 +142,7 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request, u *User)
 			return err
 		}
 		payload, _ := json.Marshal(s)
-		return store.AppendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", payload, u.ID)
+		return store.AppendSync(tx, "settings", strconv.FormatInt(u.ID, 10), "upsert", payload, u.ID, 0)
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -180,7 +181,16 @@ type SlotGroup struct {
 
 // GET /api/slots — available slots filtered by the current user's settings.
 func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
+	if u.ClubID() == 0 {
+		httpError(w, http.StatusConflict, "you are not in a club yet")
+		return
+	}
 	s, err := a.loadSettings(u.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	clubLocations, err := a.clubLocations(r, u.ClubID())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -204,10 +214,10 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 	for _, d := range s.Weekdays {
 		wanted[d] = true
 	}
-	wantedLoc := map[string]bool{}
-	for _, l := range s.Locations {
-		wantedLoc[l] = true
-	}
+	// filter lists for club scope and users settings
+	// empty means unfiltered
+	clubLoc := locationSet(clubLocations)
+	userLoc := locationSet(s.Locations)
 
 	groups := []SlotGroup{}
 	for _, record := range records {
@@ -223,7 +233,10 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 		if !wanted[g.Weekday] {
 			continue
 		}
-		if len(wantedLoc) > 0 && !wantedLoc[g.Location] {
+		if len(clubLoc) > 0 && !clubLoc[g.Location] {
+			continue
+		}
+		if len(userLoc) > 0 && !userLoc[g.Location] {
 			continue
 		}
 		g.Courts = splitCourts(record.Courts)
@@ -257,15 +270,69 @@ func splitCourts(s string) []string {
 	return out
 }
 
-// GET /api/locations — all locations currently present in the slot cache,
-// for the location filter UI.
+// GET /api/locations — the venues the active club can see, for the filter UI.
+// ?all=1 returns every scraped venue, which is what the club editor picks from.
 func (a *App) handleListLocations(w http.ResponseWriter, r *http.Request, u *User) {
-	locations, err := store.ListLocations(a.orm.WithContext(r.Context()))
+	scraped, err := store.ListLocations(a.orm.WithContext(r.Context()))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	writeJSON(w, http.StatusOK, locations)
+	if r.URL.Query().Get("all") == "1" {
+		writeJSON(w, http.StatusOK, scraped)
+		return
+	}
+	clubLocations, err := a.clubLocations(r, u.ClubID())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	writeJSON(w, http.StatusOK, intersectLocations(clubLocations, scraped))
+}
+
+// clubLocations reads a club's venue list. An empty result means the club is
+// not restricted to any subset.
+func (a *App) clubLocations(r *http.Request, clubID int64) ([]string, error) {
+	if clubID == 0 {
+		return []string{}, nil
+	}
+	club, err := store.FindClub(a.orm.WithContext(r.Context()), clubID)
+	if err != nil {
+		return nil, err
+	}
+	return parseLocations(club.Locations), nil
+}
+
+// locationSet indexes a venue list for lookup. An empty list yields an empty
+// set, which callers read as "no constraint from that side".
+func locationSet(locations []string) map[string]bool {
+	set := make(map[string]bool, len(locations))
+	for _, location := range locations {
+		set[location] = true
+	}
+	return set
+}
+
+// intersectLocations narrows one venue list by another, treating an empty list
+// as "everything" — the convention user_settings.locations already uses.
+func intersectLocations(a, b []string) []string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	allowed := make(map[string]bool, len(b))
+	for _, location := range b {
+		allowed[location] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, location := range a {
+		if allowed[location] {
+			out = append(out, location)
+		}
+	}
+	return out
 }
 
 // POST /api/slots/refresh — trigger a scrape unless one just ran or is running.
@@ -274,19 +341,35 @@ func (a *App) handleRefreshSlots(w http.ResponseWriter, r *http.Request, u *User
 	writeJSON(w, http.StatusAccepted, map[string]bool{"started": started, "scraping": true})
 }
 
-// GET /api/users — group members (for showing who voted).
+// GET /api/users — the people who share a club with the caller (for showing
+// who voted). ?all=1 gives an admin the whole directory, to staff clubs from.
 func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request, u *User) {
-	records, err := store.ListMembers(a.orm.WithContext(r.Context()))
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "database error")
-		return
-	}
+	db := a.orm.WithContext(r.Context())
 	type member struct {
 		ID      int64  `json:"id"`
 		Name    string `json:"name"`
 		IsAdmin bool   `json:"is_admin"`
 	}
 	members := []member{}
+
+	if u.IsAdmin && r.URL.Query().Get("all") == "1" {
+		records, err := store.ListMembers(db)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		for _, record := range records {
+			members = append(members, member{ID: record.ID, Name: record.Name, IsAdmin: record.IsAdmin})
+		}
+		writeJSON(w, http.StatusOK, members)
+		return
+	}
+
+	records, err := store.ListVisibleMembers(db, u.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
 	for _, record := range records {
 		members = append(members, member{ID: record.ID, Name: record.Name, IsAdmin: record.IsAdmin})
 	}
@@ -298,6 +381,8 @@ func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request, u *User) {
 type Invite struct {
 	Token     string  `json:"token"`
 	Kind      string  `json:"kind"` // 'single' | 'group' | 'email'
+	ClubID    int64   `json:"club_id"`
+	ClubName  string  `json:"club_name"`
 	Email     *string `json:"email"`
 	CreatedAt string  `json:"created_at"`
 	UsedBy    *string `json:"used_by"` // single invites: name of the user who redeemed it
@@ -308,23 +393,42 @@ type Invite struct {
 
 func inviteFromRecord(record store.InviteRecord) Invite {
 	return Invite{
-		Token: record.Token, Kind: record.Kind, Email: record.Email,
+		Token: record.Token, Kind: record.Kind,
+		ClubID: record.ClubID, ClubName: record.ClubName, Email: record.Email,
 		CreatedAt: record.CreatedAt, UsedBy: record.UsedByName, UsedAt: record.UsedAt,
 		Disabled: record.Disabled, Uses: record.Uses,
 	}
 }
 
-// POST /api/invites — body: {"kind": "single"|"group"} (defaults to single).
+// POST /api/invites — body: {"kind": "single"|"group"|"email", "club_id": n}.
+// Every invite belongs to exactly one club; it defaults to the caller's active
+// one, and creating it requires managing that club.
 func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	var req struct {
 		Kind   string `json:"kind"`
 		Email  string `json:"email"`
 		Origin string `json:"origin"`
+		ClubID int64  `json:"club_id"`
 	}
 	// Body is optional; an empty body means a single-use invite.
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
 	if req.Kind == "" {
 		req.Kind = "single"
+	}
+	if req.ClubID == 0 {
+		req.ClubID = u.ClubID()
+	}
+	if req.ClubID == 0 {
+		httpError(w, http.StatusBadRequest, "an invite needs a club")
+		return
+	}
+	if _, err := store.FindClub(a.orm.WithContext(r.Context()), req.ClubID); err != nil {
+		httpError(w, http.StatusNotFound, "club not found")
+		return
+	}
+	if !a.managesClub(r, u, req.ClubID) {
+		httpError(w, http.StatusForbidden, "not allowed to manage this club")
+		return
 	}
 	req.Origin = a.linkOrigin(req.Origin)
 	if req.Origin == "" {
@@ -376,7 +480,7 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 
 	token := randomToken(16)
 	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := store.CreateInvite(tx, token, u.ID, req.Kind, inviteEmail); err != nil {
+		if err := store.CreateInvite(tx, token, u.ID, req.ClubID, req.Kind, inviteEmail); err != nil {
 			return err
 		}
 		inv, err := store.FindInvite(tx, token)
@@ -384,7 +488,7 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 			return err
 		}
 		payload, _ := json.Marshal(inviteFromRecord(inv))
-		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins)
+		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins, req.ClubID)
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
@@ -404,9 +508,14 @@ func (a *App) handleCreateInvite(w http.ResponseWriter, r *http.Request, u *User
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "kind": req.Kind})
 }
 
-// GET /api/invites
+// GET /api/invites — every invite for an admin, a club owner's own otherwise.
 func (a *App) handleListInvites(w http.ResponseWriter, r *http.Request, u *User) {
-	records, err := store.ListInvites(a.orm.WithContext(r.Context()))
+	scope, err := a.inviteScope(r, u)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	records, err := store.ListInvites(a.orm.WithContext(r.Context()), scope)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
@@ -421,6 +530,10 @@ func (a *App) handleListInvites(w http.ResponseWriter, r *http.Request, u *User)
 // POST /api/invites/{token}/disable — stops the link from accepting registrations.
 func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	token := r.PathValue("token")
+	clubID, ok := a.authorizeInvite(w, r, u, token)
+	if !ok {
+		return
+	}
 	notFound := false
 	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		affected, err := store.DisableInvite(tx, token)
@@ -436,7 +549,7 @@ func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *Use
 			return err
 		}
 		payload, _ := json.Marshal(inviteFromRecord(inv))
-		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins)
+		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins, clubID)
 	})
 	if notFound {
 		httpError(w, http.StatusNotFound, "invite not found")
@@ -454,6 +567,10 @@ func (a *App) handleDisableInvite(w http.ResponseWriter, r *http.Request, u *Use
 // also stops them working); single invites only while unused.
 func (a *App) handleDeleteInvite(w http.ResponseWriter, r *http.Request, u *User) {
 	token := r.PathValue("token")
+	clubID, ok := a.authorizeInvite(w, r, u, token)
+	if !ok {
+		return
+	}
 	notFound := false
 	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		affected, err := store.DeleteInvite(tx, token)
@@ -464,7 +581,7 @@ func (a *App) handleDeleteInvite(w http.ResponseWriter, r *http.Request, u *User
 			notFound = true
 			return gorm.ErrRecordNotFound
 		}
-		return store.AppendSync(tx, "invite", token, "delete", nil, visibleToAdmins)
+		return store.AppendSync(tx, "invite", token, "delete", nil, visibleToAdmins, clubID)
 	})
 	if notFound {
 		httpError(w, http.StatusNotFound, "invite not found or already used")
@@ -490,17 +607,145 @@ func (a *App) handleCheckInvite(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	// A refused invite still names its club: someone who already redeemed it
+	// needs to be told they are in that club rather than that the link is
+	// spent. This exposes no more than the token's own existence already does.
 	if invite.Disabled {
-		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "disabled"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid": false, "reason": "disabled",
+			"club_id": invite.ClubID, "club_name": invite.ClubName,
+		})
 		return
 	}
 	if invite.Kind != "group" && invite.UsedByID != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "reason": "used"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid": false, "reason": "used",
+			"club_id": invite.ClubID, "club_name": invite.ClubName,
+		})
 		return
 	}
 	email := ""
 	if invite.Email != nil {
 		email = *invite.Email
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"valid": true, "email": email})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid": true, "email": email,
+		"club_id": invite.ClubID, "club_name": invite.ClubName,
+	})
 }
+
+// inviteScope is the set of clubs whose invites the caller may see: nil for a
+// global admin (meaning all), otherwise the clubs they own.
+func (a *App) inviteScope(r *http.Request, u *User) ([]int64, error) {
+	if u.IsAdmin {
+		return nil, nil
+	}
+	owned, err := store.ListOwnedClubIDs(a.orm.WithContext(r.Context()), u.ID)
+	if err != nil {
+		return nil, err
+	}
+	if owned == nil {
+		owned = []int64{}
+	}
+	return owned, nil
+}
+
+// authorizeInvite resolves an invite's club and checks the caller manages it.
+func (a *App) authorizeInvite(w http.ResponseWriter, r *http.Request, u *User, token string) (int64, bool) {
+	invite, err := store.FindInvite(a.orm.WithContext(r.Context()), token)
+	if store.IsNotFound(err) {
+		httpError(w, http.StatusNotFound, "invite not found")
+		return 0, false
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return 0, false
+	}
+	if !a.managesClub(r, u, invite.ClubID) {
+		httpError(w, http.StatusForbidden, "not allowed to manage this club")
+		return 0, false
+	}
+	return invite.ClubID, true
+}
+
+// inviteProblem returns the reason an invite cannot be redeemed, or "".
+// Registration and the logged-in accept path share it so they cannot drift.
+func inviteProblem(invite store.InviteRecord, email string) string {
+	switch {
+	case invite.Disabled:
+		return "this invite link has been disabled"
+	case invite.Kind != "group" && invite.UsedByID != nil:
+		return "this invite link has already been used"
+	case invite.Kind == "email" && (invite.Email == nil || email != *invite.Email):
+		return "this invite belongs to another email"
+	case invite.ClubID == 0:
+		return "this invite is not attached to a club"
+	}
+	return ""
+}
+
+// POST /api/invites/{token}/accept — join the invite's club with the account
+// already signed in, instead of registering a new one.
+func (a *App) handleAcceptInvite(w http.ResponseWriter, r *http.Request, u *User) {
+	token := r.PathValue("token")
+	var (
+		alreadyMember  bool
+		clubID         int64
+		responseStatus int
+		problem        string
+	)
+	err := a.orm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		invite, err := store.FindInvite(tx, token)
+		if store.IsNotFound(err) {
+			responseStatus, problem = http.StatusForbidden, "invalid invite link"
+			return errInviteRejected
+		}
+		if err != nil {
+			return err
+		}
+		if reason := inviteProblem(invite, u.Email); reason != "" {
+			responseStatus, problem = http.StatusForbidden, reason
+			return errInviteRejected
+		}
+		clubID = invite.ClubID
+
+		alreadyMember, err = store.IsClubMember(tx, clubID, u.ID)
+		if err != nil {
+			return err
+		}
+		if err := a.joinClub(tx, u.ID, clubID); err != nil {
+			return err
+		}
+		if err := a.syncMembership(tx, u.ID); err != nil {
+			return err
+		}
+		// Joining a club you are already in must not burn a one-time link.
+		if alreadyMember {
+			return nil
+		}
+		if err := store.RedeemInvite(tx, token, u.ID); err != nil {
+			return err
+		}
+		redeemed, err := store.FindInvite(tx, token)
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(inviteFromRecord(redeemed))
+		return store.AppendSync(tx, "invite", token, "upsert", payload, visibleToAdmins, clubID)
+	})
+	if responseStatus != 0 {
+		httpError(w, responseStatus, problem)
+		return
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	a.hub.notify()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"already_member": alreadyMember,
+		"club_id":        clubID,
+	})
+}
+
+var errInviteRejected = errors.New("invite rejected")

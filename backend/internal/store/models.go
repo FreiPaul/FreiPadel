@@ -11,9 +11,31 @@ type userModel struct {
 	PasswordHash string `gorm:"column:password_hash;not null"`
 	IsAdmin      bool   `gorm:"column:is_admin;not null;default:false"`
 	CreatedAt    string `gorm:"column:created_at;not null;default:(datetime('now'))"`
+	ActiveClubID *int64 `gorm:"column:active_club_id"`
 }
 
 func (userModel) TableName() string { return "users" }
+
+// clubModel is a group of users. Its locations column is a JSON array of venue
+// names, following user_settings.locations: an empty array means every venue.
+type clubModel struct {
+	ID        int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Name      string `gorm:"column:name;not null"`
+	OwnerID   int64  `gorm:"column:owner_id;not null"`
+	Locations string `gorm:"column:locations;not null;default:[]"`
+	CreatedAt string `gorm:"column:created_at;not null;default:(datetime('now'))"`
+}
+
+func (clubModel) TableName() string { return "clubs" }
+
+type clubMemberModel struct {
+	ClubID   int64     `gorm:"column:club_id;primaryKey"`
+	UserID   int64     `gorm:"column:user_id;primaryKey"`
+	JoinedAt string    `gorm:"column:joined_at;not null;default:(datetime('now'))"`
+	User     userModel `gorm:"foreignKey:UserID;references:ID"`
+}
+
+func (clubMemberModel) TableName() string { return "club_members" }
 
 type sessionModel struct {
 	Token     string    `gorm:"column:token;primaryKey"`
@@ -44,6 +66,8 @@ type inviteModel struct {
 	Kind       string     `gorm:"column:kind;not null;default:single"`
 	Disabled   bool       `gorm:"column:disabled;not null;default:false"`
 	Uses       int        `gorm:"column:uses;not null;default:0"`
+	ClubID     *int64     `gorm:"column:club_id"`
+	Club       *clubModel `gorm:"foreignKey:ClubID;references:ID"`
 	UsedByUser *userModel `gorm:"foreignKey:UsedBy;references:ID"`
 }
 
@@ -91,6 +115,7 @@ type pollModel struct {
 	WinningSlotID *int64    `gorm:"column:winning_slot_id"`
 	CreatedAt     string    `gorm:"column:created_at;not null;default:(datetime('now'))"`
 	ClosedAt      *string   `gorm:"column:closed_at"`
+	ClubID        *int64    `gorm:"column:club_id"`
 	Creator       userModel `gorm:"foreignKey:CreatorID;references:ID"`
 }
 
@@ -128,6 +153,7 @@ type syncLogModel struct {
 	Action    string  `gorm:"column:action;not null"`
 	Payload   *string `gorm:"column:payload"`
 	VisibleTo *int64  `gorm:"column:visible_to"`
+	ClubID    *int64  `gorm:"column:club_id"`
 	CreatedAt string  `gorm:"column:created_at;not null;default:(datetime('now'))"`
 }
 

@@ -129,8 +129,9 @@ func TestInvitePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
+	club := testClub(t, storage, creator.ID)
 	email := "friend@example.com"
-	if err := CreateInvite(storage.ORM, "invite-token", creator.ID, "email", &email); err != nil {
+	if err := CreateInvite(storage.ORM, "invite-token", creator.ID, club.ID, "email", &email); err != nil {
 		t.Fatalf("create invite: %v", err)
 	}
 	if exists, err := UserOrInviteEmailExists(storage.ORM, email); err != nil || !exists {
@@ -158,7 +159,7 @@ func TestInvitePersistence(t *testing.T) {
 	if invite.Uses != 1 || invite.UsedByID == nil || *invite.UsedByID != friend.ID || invite.UsedByName == nil {
 		t.Errorf("redeemed invite = %#v", invite)
 	}
-	invites, err := ListInvites(storage.ORM)
+	invites, err := ListInvites(storage.ORM, nil)
 	if err != nil {
 		t.Fatalf("list invites: %v", err)
 	}
@@ -185,8 +186,9 @@ func TestUserOrInviteEmailExistsMatchesOnlyTheGivenAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
+	club := testClub(t, storage, admin.ID)
 	pending := "pending@example.com"
-	if err := CreateInvite(storage.ORM, "pending-token", admin.ID, "email", &pending); err != nil {
+	if err := CreateInvite(storage.ORM, "pending-token", admin.ID, club.ID, "email", &pending); err != nil {
 		t.Fatalf("create invite: %v", err)
 	}
 
@@ -226,10 +228,11 @@ func TestCreateInviteWithoutEmailStoresNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
+	club := testClub(t, storage, admin.ID)
 	for _, kind := range []string{"single", "group"} {
 		t.Run(kind, func(t *testing.T) {
 			token := kind + "-token"
-			if err := CreateInvite(storage.ORM, token, admin.ID, kind, nil); err != nil {
+			if err := CreateInvite(storage.ORM, token, admin.ID, club.ID, kind, nil); err != nil {
 				t.Fatalf("create %s invite: %v", kind, err)
 			}
 			invite, err := FindInvite(storage.ORM, token)

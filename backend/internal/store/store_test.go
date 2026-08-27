@@ -176,7 +176,7 @@ func TestGORMMetadataAndSyncWrites(t *testing.T) {
 		if err := tx.Create(&userModel{Email: "rollback@example.com", Name: "Rollback", PasswordHash: "hash"}).Error; err != nil {
 			return err
 		}
-		if err := AppendSync(tx, "user", "rollback", "upsert", []byte(`{"id":1}`), 7); err != nil {
+		if err := AppendSync(tx, "user", "rollback", "upsert", []byte(`{"id":1}`), 7, 0); err != nil {
 			return err
 		}
 		return wantErr
@@ -195,7 +195,7 @@ func TestGORMMetadataAndSyncWrites(t *testing.T) {
 		if err := tx.Create(&userModel{Email: "commit@example.com", Name: "Commit", PasswordHash: "hash"}).Error; err != nil {
 			return err
 		}
-		return AppendSync(tx, "user", "commit", "upsert", []byte(`{"id":2}`), 0)
+		return AppendSync(tx, "user", "commit", "upsert", []byte(`{"id":2}`), 0, 0)
 	})
 	if err != nil {
 		t.Fatalf("commit transaction: %v", err)
@@ -447,5 +447,130 @@ func TestVoteCompositeKeyAndPollCascade(t *testing.T) {
 	}
 	if got := scalarInt(t, db, `SELECT COUNT(*) FROM votes WHERE poll_slot_id = ?`, slotID); got != 0 {
 		t.Errorf("vote count after poll deletion = %d, want 0", got)
+	}
+}
+
+// testClub creates a club owned by the given user, for tests that need
+// somewhere to hang club-scoped rows.
+func testClub(t *testing.T, storage *Store, ownerID int64) ClubRecord {
+	t.Helper()
+	club, err := CreateClub(storage.ORM, "Test Club", ownerID)
+	if err != nil {
+		t.Fatalf("create club: %v", err)
+	}
+	if err := AddClubMember(storage.ORM, club.ID, ownerID); err != nil {
+		t.Fatalf("add club member: %v", err)
+	}
+	return club
+}
+
+// TestMigrateGathersExistingDeploymentIntoAllClub covers migration 6 against a
+// realistic pre-clubs database: everyone joins one "All" club owned by the
+// first admin, and the polls and invites that were already there follow.
+func TestMigrateGathersExistingDeploymentIntoAllClub(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preclubs.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open pre-clubs database: %v", err)
+	}
+	// Only the tables the backfill touches are seeded; the runner replays the
+	// whole migration history over them, which is what a real upgrade does.
+	schema := `
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			name TEXT NOT NULL,
+			password_hash TEXT NOT NULL,
+			is_admin INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE invites (
+			token TEXT PRIMARY KEY,
+			created_by INTEGER NOT NULL REFERENCES users(id),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			used_by INTEGER REFERENCES users(id),
+			used_at TEXT,
+			kind TEXT NOT NULL DEFAULT 'single',
+			disabled INTEGER NOT NULL DEFAULT 0,
+			uses INTEGER NOT NULL DEFAULT 0,
+			email TEXT
+		);
+		CREATE TABLE polls (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			creator_id INTEGER NOT NULL REFERENCES users(id),
+			title TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			winning_slot_id INTEGER,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			closed_at TEXT
+		);
+		-- The founder registered first but a later account is the admin, so the
+		-- migration must pick by is_admin rather than by id.
+		INSERT INTO users (id, email, name, password_hash, is_admin)
+			VALUES (1, 'member@example.com', 'Member', 'hash', 0),
+			       (2, 'admin@example.com', 'Admin', 'hash', 1);
+		INSERT INTO invites (token, created_by) VALUES ('outstanding', 2);
+		INSERT INTO invites (token, created_by, used_by, used_at) VALUES ('spent', 2, 1, datetime('now'));
+		INSERT INTO polls (id, creator_id, title) VALUES (1, 1, 'Tuesday?');
+	`
+	if _, err := legacy.Exec(schema); err != nil {
+		legacy.Close()
+		t.Fatalf("create pre-clubs database: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close pre-clubs database: %v", err)
+	}
+
+	storage, err := Open(path)
+	if err != nil {
+		t.Fatalf("migrate pre-clubs database: %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	db := storage.sql
+
+	var clubID, ownerID int64
+	var name, locations string
+	if err := db.QueryRow(`SELECT id, name, owner_id, locations FROM clubs`).
+		Scan(&clubID, &name, &ownerID, &locations); err != nil {
+		t.Fatalf("read the migrated club: %v", err)
+	}
+	if name != "All" || ownerID != 2 {
+		t.Errorf("migrated club = %q owned by %d, want All owned by 2", name, ownerID)
+	}
+	// An empty venue list means every venue, which is what "All" is.
+	if locations != "[]" {
+		t.Errorf("club locations = %q, want []", locations)
+	}
+
+	members := `SELECT COUNT(*) FROM club_members WHERE club_id = ` + strconv.FormatInt(clubID, 10)
+	if got := scalarInt(t, db, members); got != 2 {
+		t.Errorf("club members = %d, want 2", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM users WHERE active_club_id IS NULL`); got != 0 {
+		t.Errorf("users without an active club = %d, want 0", got)
+	}
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM polls WHERE club_id IS NULL`); got != 0 {
+		t.Errorf("polls without a club = %d, want 0", got)
+	}
+	// Both invites are backfilled, and the unused one stays redeemable.
+	if got := scalarInt(t, db, `SELECT COUNT(*) FROM invites WHERE club_id IS NULL`); got != 0 {
+		t.Errorf("invites without a club = %d, want 0", got)
+	}
+	if got := scalarInt(t, db, `SELECT disabled FROM invites WHERE token = 'outstanding'`); got != 0 {
+		t.Errorf("outstanding invite disabled = %d, want 0", got)
+	}
+}
+
+// A deployment nobody has registered against has no admin to own a club, so
+// migration 6 must leave the table empty and let the first registration found
+// one instead.
+func TestMigrateCreatesNoClubWithoutUsers(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "empty.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if got := scalarInt(t, storage.sql, `SELECT COUNT(*) FROM clubs`); got != 0 {
+		t.Errorf("clubs in a fresh database = %d, want 0", got)
 	}
 }

@@ -18,6 +18,9 @@ export interface Scratch {
 	slotBId?: number;
 	dateA?: string;
 	dateB?: string;
+	allClubId?: number;
+	crewClubId?: number;
+	crewInviteToken?: string;
 }
 
 export function readScratch(): Scratch {

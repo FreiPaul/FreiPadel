@@ -37,19 +37,20 @@ func TestWritesRealTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := CreateInvite(storage.ORM, "token", user.ID, "single", nil); err != nil {
+	club := testClub(t, storage, user.ID)
+	if err := CreateInvite(storage.ORM, "token", user.ID, club.ID, "single", nil); err != nil {
 		t.Fatalf("create invite: %v", err)
 	}
-	pollID, err := CreatePoll(storage.ORM, user.ID, "Tuesday", []PollSlotRecord{{
+	pollID, err := CreatePoll(storage.ORM, club.ID, user.ID, "Tuesday", []PollSlotRecord{{
 		Date: "2026-06-09", Time: "19:00", DurationMinutes: 90, Location: "Club", Court: "Court 1",
 	}})
 	if err != nil {
 		t.Fatalf("create poll: %v", err)
 	}
-	if err := AppendSync(storage.ORM, "poll", strconv.FormatInt(pollID, 10), "upsert", []byte(`{}`), 0); err != nil {
+	if err := AppendSync(storage.ORM, "poll", strconv.FormatInt(pollID, 10), "upsert", []byte(`{}`), 0, 0); err != nil {
 		t.Fatalf("append sync: %v", err)
 	}
-	slots, err := ListPollSlots(storage.ORM, &pollID)
+	slots, err := ListPollSlots(storage.ORM, &pollID, nil)
 	if err != nil || len(slots) != 1 {
 		t.Fatalf("list poll slots = %d slots, error = %v", len(slots), err)
 	}
@@ -82,14 +83,14 @@ func TestSyncLogCompactionFindsExpiredRows(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = storage.Close() })
 
-	if err := AppendSync(storage.ORM, "poll", "1", "upsert", []byte(`{}`), 0); err != nil {
+	if err := AppendSync(storage.ORM, "poll", "1", "upsert", []byte(`{}`), 0, 0); err != nil {
 		t.Fatalf("append sync: %v", err)
 	}
 	if _, err := storage.sql.Exec(
 		`UPDATE sync_log SET created_at = datetime('now', '-30 days')`); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
-	if err := AppendSync(storage.ORM, "poll", "2", "upsert", []byte(`{}`), 0); err != nil {
+	if err := AppendSync(storage.ORM, "poll", "2", "upsert", []byte(`{}`), 0, 0); err != nil {
 		t.Fatalf("append recent sync: %v", err)
 	}
 

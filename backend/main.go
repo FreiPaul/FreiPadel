@@ -209,16 +209,30 @@ func main() {
 	// Members
 	mux.HandleFunc("GET /api/users", app.requireAuth(app.handleListUsers))
 
+	// Clubs
+	mux.HandleFunc("GET /api/clubs", app.requireAuth(app.handleListClubs))
+	mux.HandleFunc("POST /api/clubs/{id}/activate", app.requireClubMember(app.handleActivateClub))
+	mux.HandleFunc("PATCH /api/clubs/{id}", app.requireClubManager(app.handleUpdateClub))
+	mux.HandleFunc("DELETE /api/clubs/{id}", app.requireAdmin(app.handleDeleteClub))
+	mux.HandleFunc("GET /api/clubs/{id}/members", app.requireClubManager(app.handleListClubMembers))
+	mux.HandleFunc("POST /api/clubs/{id}/members", app.requireClubManager(app.handleAddClubMember))
+	mux.HandleFunc("DELETE /api/clubs/{id}/members/{userID}", app.requireClubManager(app.handleRemoveClubMember))
+	mux.HandleFunc("GET /api/admin/clubs", app.requireAdmin(app.handleAdminListClubs))
+	mux.HandleFunc("POST /api/admin/clubs", app.requireAdmin(app.handleCreateClub))
+
 	// Sync engine (bootstrap snapshot + SSE delta stream)
 	mux.HandleFunc("GET /api/sync/bootstrap", app.requireAuth(app.handleSyncBootstrap))
 	mux.HandleFunc("GET /api/sync/events", app.requireAuth(app.handleSyncEvents))
 
 	// Invites
 	mux.HandleFunc("GET /api/invites/{token}/check", app.handleCheckInvite)
-	mux.HandleFunc("GET /api/invites", app.requireAdmin(app.handleListInvites))
-	mux.HandleFunc("POST /api/invites", app.requireAdmin(app.handleCreateInvite))
-	mux.HandleFunc("POST /api/invites/{token}/disable", app.requireAdmin(app.handleDisableInvite))
-	mux.HandleFunc("DELETE /api/invites/{token}", app.requireAdmin(app.handleDeleteInvite))
+	mux.HandleFunc("POST /api/invites/{token}/accept", app.requireAuth(app.handleAcceptInvite))
+	// Invite management is gated per club (owner or global admin), not by the
+	// global admin flag alone.
+	mux.HandleFunc("GET /api/invites", app.requireInviteManager(app.handleListInvites))
+	mux.HandleFunc("POST /api/invites", app.requireInviteManager(app.handleCreateInvite))
+	mux.HandleFunc("POST /api/invites/{token}/disable", app.requireInviteManager(app.handleDisableInvite))
+	mux.HandleFunc("DELETE /api/invites/{token}", app.requireInviteManager(app.handleDeleteInvite))
 
 	// Unknown API routes must not fall through to the SPA.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -321,8 +335,6 @@ func (a *App) runScrape() {
 		return
 	}
 
-	keySet := map[string]bool{}
-	keys := []string{}
 	records := make([]store.SlotRecord, 0, len(slots))
 	for _, s := range slots {
 		if strings.Contains(strings.ToLower(s.Court), "single") {
@@ -332,24 +344,52 @@ func (a *App) runScrape() {
 			Source: s.Source, Location: s.Location, Court: s.Court, Date: s.Date, Time: s.Time,
 			DurationMinutes: s.DurationMinutes, Price: s.Price, Currency: s.Currency,
 		})
-		if k := slotKey(s.Date, s.Time, s.DurationMinutes, s.Location); !keySet[k] {
-			keySet[k] = true
-			keys = append(keys, k)
-		}
 	}
 	fetchedAt := time.Now().In(a.tz).Format(time.RFC3339)
-	err = a.orm.Transaction(func(tx *gorm.DB) error {
-		if err := store.ReplaceSlots(tx, records); err != nil {
-			return err
-		}
-		payload, _ := json.Marshal(map[string]any{"keys": keys, "last_fetched_at": fetchedAt})
-		return store.AppendSync(tx, "slots", "snapshot", "upsert", payload, 0)
-	})
-	if err != nil {
+	if err := a.orm.Transaction(func(tx *gorm.DB) error {
+		return store.ReplaceSlots(tx, records)
+	}); err != nil {
 		log.Printf("scrape store: %v", err)
 		return
 	}
 	_ = a.store.SetMeta("last_fetched_at", fetchedAt)
-	a.hub.notify()
+	a.publishSlotKeys()
 	log.Printf("scrape done: %d slots in %s", len(slots), time.Since(start).Round(time.Millisecond))
+}
+
+// publishSlotKeys broadcasts each club's bookable slot keys, one delta per
+// club so a club only ever learns about its own venues. Only the keys travel
+// over the sync stream; the slot rows themselves are fetched lazily by
+// /api/slots when the page opens. Also called when a club's venues change.
+func (a *App) publishSlotKeys() {
+	clubs, err := store.ListClubs(a.orm)
+	if err != nil {
+		log.Printf("publish slot keys: %v", err)
+		return
+	}
+	availability, err := store.ListSlotAvailability(a.orm)
+	if err != nil {
+		log.Printf("publish slot keys: %v", err)
+		return
+	}
+	fetchedAt := a.store.GetMeta("last_fetched_at")
+	err = a.orm.Transaction(func(tx *gorm.DB) error {
+		for _, club := range clubs {
+			payload, _ := json.Marshal(map[string]any{
+				"club_id":         club.ID,
+				"keys":            clubSlotKeys(availability, parseLocations(club.Locations)),
+				"last_fetched_at": fetchedAt,
+			})
+			if err := store.AppendSync(tx, "slots", strconv.FormatInt(club.ID, 10),
+				"upsert", payload, 0, club.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("publish slot keys: %v", err)
+		return
+	}
+	a.hub.notify()
 }

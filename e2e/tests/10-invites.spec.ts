@@ -41,11 +41,18 @@ test.describe.serial('invites', () => {
 			const group = tokenFromURL(groupURL);
 			expect(singleURL).toBe(`http://localhost:8099/register?token=${single}`);
 
-			const invites = rows<{ token: string; kind: string; email: string | null; disabled: number; uses: number }>(
-				'SELECT token, kind, email, disabled, uses FROM invites ORDER BY rowid'
-			);
+			const invites = rows<{
+				token: string;
+				kind: string;
+				email: string | null;
+				disabled: number;
+				uses: number;
+				club_id: number;
+			}>('SELECT token, kind, email, disabled, uses, club_id FROM invites ORDER BY rowid');
 			expect(invites).toHaveLength(3);
 			expect(invites.map((i) => i.kind)).toEqual(['single', 'group', 'email']);
+			// Every invite joins its holder to one club — here the admin's own.
+			expect(invites.every((i) => i.club_id === need('allClubId'))).toBe(true);
 			expect(invites.map((i) => i.email)).toEqual([null, null, personas.dave.email]);
 			expect(invites.every((i) => i.disabled === 0 && i.uses === 0)).toBe(true);
 			expect(invites[0].token).toBe(single);
@@ -88,11 +95,23 @@ test.describe.serial('invites', () => {
 	test('the public check endpoint reports each invite state', async ({ request, page }) => {
 		const single = need('singleInviteToken');
 
+		// The check names the club, so the redemption page can say what you are
+		// about to join.
 		const ok = await request.get(`/api/invites/${single}/check`);
-		expect(await ok.json()).toEqual({ valid: true, email: '' });
+		expect(await ok.json()).toEqual({
+			valid: true,
+			email: '',
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		const emailInvite = await request.get(`/api/invites/${need('emailInviteToken')}/check`);
-		expect(await emailInvite.json()).toEqual({ valid: true, email: personas.dave.email });
+		expect(await emailInvite.json()).toEqual({
+			valid: true,
+			email: personas.dave.email,
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		const unknown = await request.get('/api/invites/not-a-real-token/check');
 		expect(await unknown.json()).toEqual({ valid: false, reason: 'unknown' });
@@ -154,7 +173,12 @@ test.describe.serial('invites', () => {
 		});
 		// Still valid for the next person.
 		const res = await page.request.get(`/api/invites/${token}/check`);
-		expect(await res.json()).toEqual({ valid: true, email: '' });
+		expect(await res.json()).toEqual({
+			valid: true,
+			email: '',
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		await context.close();
 	});
@@ -196,7 +220,14 @@ test.describe.serial('invites', () => {
 		const token = need('singleInviteToken');
 
 		const check = await request.get(`/api/invites/${token}/check`);
-		expect(await check.json()).toEqual({ valid: false, reason: 'used' });
+		// A refused invite still names its club, so someone who already redeemed
+		// it can be told they are in rather than that the link is spent.
+		expect(await check.json()).toEqual({
+			valid: false,
+			reason: 'used',
+			club_id: need('allClubId'),
+			club_name: 'All'
+		});
 
 		await page.goto(`/register?token=${token}`);
 		await expect(page.getByText('This invite link has already been used')).toBeVisible();
@@ -222,7 +253,12 @@ test.describe.serial('invites', () => {
 			expect(one('SELECT disabled FROM invites WHERE token = ?', token)).toEqual({ disabled: 1 });
 
 			const check = await request.get(`/api/invites/${token}/check`);
-			expect(await check.json()).toEqual({ valid: false, reason: 'disabled' });
+			expect(await check.json()).toEqual({
+				valid: false,
+				reason: 'disabled',
+				club_id: need('allClubId'),
+				club_name: 'All'
+			});
 
 			const res = await request.post('/api/auth/register', {
 				data: { invite_token: token, email: 'nope@e2e.test', name: 'Nope', password: 'nope-1234' }

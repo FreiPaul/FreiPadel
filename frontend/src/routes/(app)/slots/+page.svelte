@@ -15,6 +15,7 @@
     let showFilters = $state(false);
 
     const loading = $derived(sync.slotGroups === null);
+    const noClub = $derived(sync.ready && sync.activeClubId === null);
     const refreshing = $derived(sync.scraping);
 
     let selecting = $state(false);
@@ -155,7 +156,13 @@
         </Card.Root>
     {/if}
 
-    {#if loading}
+    {#if noClub}
+        <Card.Root>
+            <Card.Content class="py-10 text-center text-muted-foreground">
+                You are not in a club yet. Ask a club owner for an invite link.
+            </Card.Content>
+        </Card.Root>
+    {:else if loading}
         <div class="flex flex-col gap-4">
             <Skeleton class="h-32 w-full" />
             <Skeleton class="h-32 w-full" />

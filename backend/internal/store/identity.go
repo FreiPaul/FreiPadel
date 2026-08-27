@@ -15,11 +15,14 @@ type UserRecord struct {
 	PasswordHash string
 	IsAdmin      bool
 	CreatedAt    string
+	ActiveClubID *int64
 }
 
 type InviteRecord struct {
 	Token      string
 	Kind       string
+	ClubID     int64
+	ClubName   string
 	Email      *string
 	CreatedAt  string
 	UsedByID   *int64
@@ -63,6 +66,14 @@ func FindUserBySession(db *gorm.DB, tokenHash string) (UserRecord, error) {
 		return UserRecord{}, err
 	}
 	return userRecord(session.User), nil
+}
+
+func FindUserByID(db *gorm.DB, id int64) (UserRecord, error) {
+	model, err := gorm.G[userModel](db).Where("id = ?", id).First(db.Statement.Context)
+	if err != nil {
+		return UserRecord{}, err
+	}
+	return userRecord(model), nil
 }
 
 func FindUserByEmail(db *gorm.DB, email string) (UserRecord, error) {
@@ -232,6 +243,7 @@ func EmailUnavailable(db *gorm.DB, email string, excludeUserID int64) (bool, err
 func FindInvite(db *gorm.DB, token string) (InviteRecord, error) {
 	model, err := gorm.G[inviteModel](db).
 		Preload("UsedByUser", nil).
+		Preload("Club", nil).
 		Where("token = ?", token).
 		First(db.Statement.Context)
 	if err != nil {
@@ -240,12 +252,18 @@ func FindInvite(db *gorm.DB, token string) (InviteRecord, error) {
 	return inviteRecord(model), nil
 }
 
-func ListInvites(db *gorm.DB) ([]InviteRecord, error) {
-	models, err := gorm.G[inviteModel](db).
-		Preload("UsedByUser", nil).
-		Order("created_at DESC").
-		Find(db.Statement.Context)
-	if err != nil {
+// ListInvites returns invites for the given clubs, or — when clubIDs is nil —
+// every invite. An empty (non-nil) slice returns nothing.
+func ListInvites(db *gorm.DB, clubIDs []int64) ([]InviteRecord, error) {
+	if clubIDs != nil && len(clubIDs) == 0 {
+		return []InviteRecord{}, nil
+	}
+	query := db.Model(&inviteModel{}).Preload("UsedByUser").Preload("Club").Order("created_at DESC")
+	if clubIDs != nil {
+		query = query.Where("club_id IN ?", clubIDs)
+	}
+	var models []inviteModel
+	if err := query.Find(&models).Error; err != nil {
 		return nil, err
 	}
 	invites := make([]InviteRecord, len(models))
@@ -261,8 +279,10 @@ func UserOrInviteEmailExists(db *gorm.DB, email string) (bool, error) {
 	return EmailUnavailable(db, email, 0)
 }
 
-func CreateInvite(db *gorm.DB, token string, createdBy int64, kind string, email *string) error {
-	return db.Create(&inviteModel{Token: token, CreatedBy: createdBy, Kind: kind, Email: email}).Error
+func CreateInvite(db *gorm.DB, token string, createdBy, clubID int64, kind string, email *string) error {
+	return db.Create(&inviteModel{
+		Token: token, CreatedBy: createdBy, ClubID: &clubID, Kind: kind, Email: email,
+	}).Error
 }
 
 func DisableInvite(db *gorm.DB, token string) (int64, error) {
@@ -323,6 +343,7 @@ func userRecord(model userModel) UserRecord {
 	return UserRecord{
 		ID: model.ID, Email: model.Email, Name: model.Name,
 		PasswordHash: model.PasswordHash, IsAdmin: model.IsAdmin, CreatedAt: model.CreatedAt,
+		ActiveClubID: model.ActiveClubID,
 	}
 }
 
@@ -341,8 +362,17 @@ func inviteRecord(model inviteModel) InviteRecord {
 		name := model.UsedByUser.Name
 		usedByName = &name
 	}
+	var clubID int64
+	var clubName string
+	if model.ClubID != nil {
+		clubID = *model.ClubID
+	}
+	if model.Club != nil {
+		clubName = model.Club.Name
+	}
 	return InviteRecord{
-		Token: model.Token, Kind: model.Kind, Email: model.Email, CreatedAt: model.CreatedAt,
+		Token: model.Token, Kind: model.Kind, ClubID: clubID, ClubName: clubName,
+		Email: model.Email, CreatedAt: model.CreatedAt,
 		UsedByID: model.UsedBy, UsedByName: usedByName, UsedAt: model.UsedAt,
 		Disabled: model.Disabled, Uses: model.Uses,
 	}

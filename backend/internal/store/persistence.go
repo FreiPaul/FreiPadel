@@ -26,8 +26,9 @@ func (s *Store) SetMeta(key, value string) error {
 
 // AppendSync records a delta using tx. Callers must pass the same transaction
 // used for the domain mutation so both writes commit or roll back together.
-// A nil payload is stored as SQL NULL; visibleTo 0 means visible to everyone.
-func AppendSync(tx *gorm.DB, entity, entityID, action string, payload []byte, visibleTo int64) error {
+// A nil payload is stored as SQL NULL; visibleTo 0 means visible to everyone
+// and clubID 0 means the delta is not scoped to a club.
+func AppendSync(tx *gorm.DB, entity, entityID, action string, payload []byte, visibleTo, clubID int64) error {
 	var storedPayload *string
 	if payload != nil {
 		value := string(payload)
@@ -37,11 +38,16 @@ func AppendSync(tx *gorm.DB, entity, entityID, action string, payload []byte, vi
 	if visibleTo != 0 {
 		storedVisibility = &visibleTo
 	}
+	var storedClub *int64
+	if clubID != 0 {
+		storedClub = &clubID
+	}
 	return tx.Create(&syncLogModel{
 		Entity:    entity,
 		EntityID:  entityID,
 		Action:    action,
 		Payload:   storedPayload,
 		VisibleTo: storedVisibility,
+		ClubID:    storedClub,
 	}).Error
 }

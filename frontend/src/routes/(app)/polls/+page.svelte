@@ -4,6 +4,7 @@
     import { auth } from "$lib/auth.svelte";
     import {
         castVote,
+        clubPolls,
         closePoll,
         deletePoll,
         slotAvailable,
@@ -73,15 +74,16 @@
                 expired,
                 available:
                     !expired &&
-                    slotAvailable(s) &&
+                    slotAvailable(s, p.club_id) &&
                     !s.court.toLowerCase().includes("single"),
             };
         });
         return { ...p, slots };
     }
 
+    // Only the club the switcher is pointing at.
     const polls = $derived(
-        Object.values(sync.polls)
+        clubPolls(sync.activeClubId)
             .map(enrich)
             .sort((a, b) =>
                 a.status === b.status
@@ -94,6 +96,7 @@
     const active = $derived(polls.filter((p) => p.status === "active"));
     const closed = $derived(polls.filter((p) => p.status === "closed"));
     const loading = $derived(!sync.ready);
+    const noClub = $derived(sync.ready && sync.activeClubId === null);
 
     let closeTargetId = $state<number | null>(null);
     let winnerID = $state<number | null>(null);
@@ -284,6 +287,12 @@
 
     {#if loading}
         <Skeleton class="h-40 w-full" />
+    {:else if noClub}
+        <Card.Root>
+            <Card.Content class="py-10 text-center text-muted-foreground">
+                You are not in a club yet. Ask a club owner for an invite link.
+            </Card.Content>
+        </Card.Root>
     {:else if active.length === 0}
         <Card.Root>
             <Card.Content class="py-10 text-center text-muted-foreground">

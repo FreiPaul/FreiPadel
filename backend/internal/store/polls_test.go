@@ -16,7 +16,8 @@ func TestPollAndVotePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	pollID, err := CreatePoll(storage.ORM, user.ID, "When?", []PollSlotRecord{
+	club := testClub(t, storage, user.ID)
+	pollID, err := CreatePoll(storage.ORM, club.ID, user.ID, "When?", []PollSlotRecord{
 		{Date: "2099-01-01", Time: "19:00", DurationMinutes: 60, Location: "Club", Court: "1, 2", Price: 20, Currency: "EUR"},
 		{Date: "2099-01-02", Time: "20:00", DurationMinutes: 90, Location: "Club", Court: "3", Price: 30, Currency: "EUR"},
 	})
@@ -30,7 +31,7 @@ func TestPollAndVotePersistence(t *testing.T) {
 	if poll.Title != "When?" || poll.CreatorName != "Creator" || poll.Status != "active" {
 		t.Errorf("created poll = %#v", poll)
 	}
-	slots, err := ListPollSlots(storage.ORM, &pollID)
+	slots, err := ListPollSlots(storage.ORM, &pollID, nil)
 	if err != nil || len(slots) != 2 {
 		t.Fatalf("poll slots = %#v, error = %v", slots, err)
 	}
@@ -45,7 +46,7 @@ func TestPollAndVotePersistence(t *testing.T) {
 	if err := UpsertVote(storage.ORM, slots[0].ID, user.ID, true); err != nil {
 		t.Fatalf("update vote: %v", err)
 	}
-	votes, err := ListVotes(storage.ORM)
+	votes, err := ListVotes(storage.ORM, []int64{club.ID})
 	if err != nil || len(votes) != 1 || !votes[0].Vote || votes[0].Name != "Creator" {
 		t.Fatalf("votes = %#v, error = %v", votes, err)
 	}
@@ -79,15 +80,16 @@ func TestListVotesForPollScopesToOnePoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	club := testClub(t, storage, user.ID)
 	slotsOf := func(title string) []PollSlotRecord {
-		id, err := CreatePoll(storage.ORM, user.ID, title, []PollSlotRecord{
+		id, err := CreatePoll(storage.ORM, club.ID, user.ID, title, []PollSlotRecord{
 			{Date: "2099-01-01", Time: "19:00", DurationMinutes: 60, Location: "Club", Court: "1", Price: 20, Currency: "EUR"},
 			{Date: "2099-01-02", Time: "20:00", DurationMinutes: 60, Location: "Club", Court: "2", Price: 20, Currency: "EUR"},
 		})
 		if err != nil {
 			t.Fatalf("create poll %s: %v", title, err)
 		}
-		slots, err := ListPollSlots(storage.ORM, &id)
+		slots, err := ListPollSlots(storage.ORM, &id, nil)
 		if err != nil || len(slots) != 2 {
 			t.Fatalf("poll slots = %#v, error = %v", slots, err)
 		}
