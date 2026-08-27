@@ -214,12 +214,10 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 	for _, d := range s.Weekdays {
 		wanted[d] = true
 	}
-	// The club decides which venues exist here; the user's own filter narrows
-	// that further. Either being empty means "no constraint from that side".
-	wantedLoc := map[string]bool{}
-	for _, l := range intersectLocations(clubLocations, s.Locations) {
-		wantedLoc[l] = true
-	}
+	// filter lists for club scope and users settings
+	// empty means unfiltered
+	clubLoc := locationSet(clubLocations)
+	userLoc := locationSet(s.Locations)
 
 	groups := []SlotGroup{}
 	for _, record := range records {
@@ -235,7 +233,10 @@ func (a *App) handleGetSlots(w http.ResponseWriter, r *http.Request, u *User) {
 		if !wanted[g.Weekday] {
 			continue
 		}
-		if len(wantedLoc) > 0 && !wantedLoc[g.Location] {
+		if len(clubLoc) > 0 && !clubLoc[g.Location] {
+			continue
+		}
+		if len(userLoc) > 0 && !userLoc[g.Location] {
 			continue
 		}
 		g.Courts = splitCourts(record.Courts)
@@ -300,6 +301,16 @@ func (a *App) clubLocations(r *http.Request, clubID int64) ([]string, error) {
 		return nil, err
 	}
 	return parseLocations(club.Locations), nil
+}
+
+// locationSet indexes a venue list for lookup. An empty list yields an empty
+// set, which callers read as "no constraint from that side".
+func locationSet(locations []string) map[string]bool {
+	set := make(map[string]bool, len(locations))
+	for _, location := range locations {
+		set[location] = true
+	}
+	return set
 }
 
 // intersectLocations narrows one venue list by another, treating an empty list

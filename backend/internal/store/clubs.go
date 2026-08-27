@@ -5,12 +5,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// A club is a group of users. Membership is a join table rather than a list
-// column on either side: users are real entities, membership carries its own
-// timestamp, and the reverse lookup ("which clubs is this user in") runs on
-// every sync connect. Club venues, by contrast, are naked strings the scraper
-// emits, so they live in a JSON column on the club row just like
-// user_settings.locations.
+// A club is a group of users.
 
 type ClubRecord struct {
 	ID        int64
@@ -64,8 +59,6 @@ func ListClubsForUser(db *gorm.DB, userID int64) ([]ClubRecord, error) {
 	return clubRecords(models), nil
 }
 
-// UpdateClub writes the club's mutable fields. Callers pass the current value
-// for anything they are not changing.
 func UpdateClub(db *gorm.DB, id int64, name string, ownerID int64, locationsJSON string) error {
 	return db.Model(&clubModel{}).Where("id = ?", id).Updates(map[string]any{
 		"name":      name,
@@ -75,7 +68,7 @@ func UpdateClub(db *gorm.DB, id int64, name string, ownerID int64, locationsJSON
 }
 
 // DeleteClub removes the club and everything that belonged to it. Callers must
-// check it is empty of members first; polls and invites go with it.
+// check it is empty of members first;
 func DeleteClub(db *gorm.DB, id int64) error {
 	if err := db.Where("club_id = ?", id).Delete(&inviteModel{}).Error; err != nil {
 		return err
