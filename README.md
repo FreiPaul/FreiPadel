@@ -1,101 +1,55 @@
 # 🎾 FreiPadel
 
 [![CI](https://github.com/FreiPaul/FreiPadel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FreiPaul/FreiPadel/actions/workflows/ci.yml)
-[![app](https://img.shields.io/uptimerobot/status/m803810552-4245b76239cb2a9f56f75e0a?label=app)](https://freipadel.freipaul.com)
-[![uptime 30d](https://img.shields.io/uptimerobot/ratio/30/m803810552-4245b76239cb2a9f56f75e0a?label=uptime%2030d)](https://freipadel.freipaul.com)
 
 Find padel slots where enough people from your group have time.
 
-FreiPadel scrapes free court slots from pluggable booking providers (see
-`backend/scraper/README.md`), shows each member the slots matching their
-personal availability window, and lets
-anyone start a **slot poll**: pick a few candidate slots, everyone votes
-"I have time" / "no time" per slot, and slots where 4+ people can play get
-highlighted. The poll creator then closes the poll, picks the winning slot
-and books the court.
+FreiPadel scrapes free court slots from your club's booking site, shows every
+member only the slots inside their own availability window, and lets anyone
+start a poll on a handful of candidate slots. Slots that enough people vote
+for are highlighted, and the poll creator books the winner.
 
-## Running in Docker
+## Features
+
+- **Slot scraping from pluggable sources.** A source is a single file that
+  registers itself and is selected at runtime from `config.json`. Adding one
+  touches no shared code. See [backend/scraper](backend/scraper/README.md).
+- **Personal availability.** Each member picks weekdays and a time window and
+  only sees slots that match. Courts at the same date, time and location are
+  collapsed into one row.
+- **Slot polls.** Pick candidate slots, everyone votes per slot, slots with
+  enough yes votes are highlighted. The creator closes the poll and books the
+  winner.
+- **Clubs.** Members belong to a club and switch between the clubs they are
+  in. Each club has its own locations, members and invites.
+- **Invite-only registration.** One-time links, group links that count uses,
+  and links bound to one email address. The first account registers without an
+  invite and becomes the admin.
+- **Notifications** by email and Telegram when a poll is created or a slot is
+  booked, per member and per kind.
+- **One container.** Go backend, SvelteKit frontend, SQLite. Nothing else is
+  required, and mail is optional.
+
+## What it does not do
+
+FreiPadel does not book courts. It finds the slots and organises the decision;
+the booking itself happens on the provider's own site. It is built for a group
+of people who already play together, not as a public court directory.
+
+## Run it
 
 ```sh
 docker compose up -d --build
 ```
 
-The app listens on **http://localhost:8080**. SQLite database and the scraper
-config live in `./data/` (created on first start).
+The app listens on http://localhost:8080. The SQLite database and the scraper
+configuration are created under `./data` on first start. Register the first
+account without an invite to become the admin, then invite the others.
 
-- **First user**: open the app, register without an invite — this account
-  becomes the **admin**.
-- **Inviting friends**: as admin, go to *Invites* → *New invite link* → send
-  the copied link. Each link works exactly once.
-- **Scraper config**: edit `data/config.json` (sources, days ahead, scrape
-  window, timezone) and restart the container.
-- Serving over HTTPS behind a reverse proxy? Set `COOKIE_SECURE: "1"` in
-  `docker-compose.yml`.
-- **Email links**: set `PUBLIC_ORIGIN` to the deployment's canonical base URL
-  (scheme + host, no trailing path). Links in poll notifications, email invites
-  and email-change confirmations are then always built from it, ignoring the
-  `origin` the browser sends — otherwise any logged-in user could have mail with
-  a link of their choosing sent to everyone. Left unset, the client-supplied
-  origin is used, which is fine for local development. A malformed value stops
-  the server at startup. Setting it also marks the deployment as non-local, so
-  the `/dev` scratch page is served as 404.
+## Documentation
 
-## Tests
-
-```sh
-make test          # frontend type-check (svelte-check) + go test ./...
-make e2e-install   # once: Playwright and its Chromium build
-make e2e           # end-to-end suite
-```
-
-`make e2e` builds the production image and drives the whole application
-through a browser — registration, all three invite kinds, availability and
-notification settings, a slot poll from creation to a booked winner — against
-a throwaway database, the built-in mock scrape source and a
-[Mailpit](https://mailpit.axllent.org) inbox that catches every outgoing mail.
-See [`e2e/README.md`](e2e/README.md). All three run in CI on every push and
-pull request (`.github/workflows/ci.yml`).
-
-## Production deployment
-
-Copy the SMTP and Telegram credentials into the Git-ignored
-`data/production.env` file, then run `make ship` (or
-`make ship-local-build`). The deploy uploads that file separately to
-`/opt/freipadel/data/production.env`, sets its permissions to `0600`, and
-references it from the production Compose file.
-
-The ship targets stop before changing the server if `SMTP_HOST`, `SMTP_USER`,
-`SMTP_PASS`, `TELEGRAM_BOT_TOKEN`, or `TELEGRAM_ADMIN_CHAT_ID` is missing. Do
-not add credentials to `docker-compose-prod.yml`; `.env` files are excluded
-from both the source archive and Docker build context.
-
-## Environment variables
-
-| Variable                  | Default    | Meaning                              |
-| ------------------------- | ---------- | ------------------------------------ |
-| `PORT`                    | `8080`     | HTTP port                            |
-| `DATA_DIR`                | `./data`   | SQLite db + `config.json` location   |
-| `STATIC_DIR`              | `./static` | Built frontend to serve              |
-| `SCRAPE_INTERVAL_MINUTES` | `30`       | Court availability refresh interval  |
-| `COOKIE_SECURE`           | `0`        | Set `1` when serving over HTTPS      |
-| `PUBLIC_ORIGIN`           | —          | Canonical base URL (e.g. `https://freipadel.example.com`); when set, all links in outgoing email are built from it and the `/dev` scratch page is disabled |
-| `EMAILER_ENABLED`         | —          | Wether the emailer is enabled        |
-| `SMTP_HOST`               | —          | SMTP server hostname                 |
-| `SMTP_PORT`               | `587`      | SMTP submission port                 |
-| `SMTP_USER`               | —          | SMTP authentication username         |
-| `SMTP_PASS`               | —          | SMTP authentication password         |
-| `MAIL_FROM`               | SMTP user  | Sender email address; required (falls back to `SMTP_USER`) or the emailer stays off |
-| `SMTP_INSECURE`           | `0`        | Set `1` to skip STARTTLS (local only) |
-| `TELEGRAM_BOT_TOKEN`      | —          | Telegram bot API token               |
-| `TELEGRAM_ADMIN_CHAT_ID`  | —          | Telegram admin chat ID               |
-
-## How slot polls work
-
-1. Set your availability under **My availability** (e.g. weekdays 19:00–21:00).
-2. **Available slots** shows free courts matching *your* window, grouped by
-   date — courts at the same date/time/location are collapsed into one row.
-3. Hit **Start slot poll**, tick candidate slots, name the poll.
-4. Everyone sees it under **Active slot polls** and votes 👍/👎 per slot.
-   Slots with **4+ yes votes** turn green.
-5. The poll creator closes the poll and picks the slot to book — booking
-   itself happens on the court provider's own site as usual.
+- [Usage](docs/usage.md): invites, availability, polls, clubs and notifications
+- [Configuration](docs/configuration.md): environment variables and `config.json`
+- [Deployment](docs/deployment.md): running it on a server
+- [Development](docs/development.md): building, tests and the end-to-end suite
+- [Scraper sources](backend/scraper/README.md): writing a source for your club
