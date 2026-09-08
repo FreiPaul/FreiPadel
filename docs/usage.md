@@ -27,6 +27,8 @@ for example weekdays between 19:00 and 21:00.
 by date. Courts at the same date, time and location are collapsed into one row,
 so a club with six identical courts does not fill the page.
 
+![The slot list](img/slots.png)
+
 ## Slot polls
 
 1. On **Available slots**, hit **Start slot poll**, tick the slots worth
@@ -35,6 +37,8 @@ so a club with six identical courts does not fill the page.
    slot.
 3. A slot with four yes votes is a full match and is highlighted.
 4. The poll creator closes the poll and picks the slot to play.
+
+![A poll with one slot that four people can play](img/poll.png)
 
 Booking the court itself still happens on the provider's own site.
 

@@ -32,7 +32,7 @@ TAR_EXCLUDES = \
 	--exclude ./logic/venv \
 	--exclude ./logic/__pycache__
 
-.PHONY: check-production-env lint ship ship-local-build logs status local run-backend run-frontend test e2e e2e-install
+.PHONY: check-production-env lint screenshots ship ship-local-build logs status local run-backend run-frontend test e2e e2e-install
 
 test:
 	cd frontend && npm run check
@@ -50,6 +50,11 @@ e2e:
 
 e2e-install:
 	cd e2e && npm ci && npx playwright install chromium
+
+# Runs the whole suite and, at the end, rewrites the images in docs/img from
+# the running application.
+screenshots:
+	cd e2e && npm run screenshots
 
 check-production-env:
 	@test -f "$(PROD_ENV)" || { echo "Missing $(PROD_ENV). Fill it with the production credentials before shipping." >&2; exit 1; }

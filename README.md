@@ -4,6 +4,8 @@
 
 Find padel slots where enough people from your group have time.
 
+![The slot list, filtered to one member's availability](docs/img/slots.png)
+
 FreiPadel scrapes free court slots from your club's booking site, shows every
 member only the slots inside their own availability window, and lets anyone
 start a poll on a handful of candidate slots. Slots that enough people vote
