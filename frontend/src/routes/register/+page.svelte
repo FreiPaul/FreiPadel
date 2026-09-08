@@ -185,8 +185,10 @@
 					<Button onclick={join} disabled={loading} class="w-full">
 						{loading ? 'Joining…' : `Join ${clubName}`}
 					</Button>
-					<a href="/login?redirect_to={encodeURIComponent(page.url.pathname + page.url.search)}"
-						class="text-center text-sm text-muted-foreground underline">
+					<a
+						href="/login?redirect_to={encodeURIComponent(page.url.pathname + page.url.search)}"
+						class="text-center text-sm text-muted-foreground underline"
+					>
 						Use a different account
 					</a>
 				</div>
@@ -215,7 +217,11 @@
 				</form>
 				<p class="mt-4 text-center text-sm text-muted-foreground">
 					No account yet?
-					<button type="button" class="underline" onclick={() => ((mode = 'register'), (error = ''))}>
+					<button
+						type="button"
+						class="underline"
+						onclick={() => ((mode = 'register'), (error = ''))}
+					>
 						Create one
 					</button>
 				</p>
@@ -227,7 +233,14 @@
 					</div>
 					<div class="grid gap-2">
 						<Label for="email">Email</Label>
-						<Input id="email" type="email" bind:value={email} disabled={emailInvite} required autocomplete="email" />
+						<Input
+							id="email"
+							type="email"
+							bind:value={email}
+							disabled={emailInvite}
+							required
+							autocomplete="email"
+						/>
 					</div>
 					<div class="grid gap-2">
 						<Label for="password">Password</Label>
@@ -251,7 +264,11 @@
 				{#if !needsSetup}
 					<p class="mt-4 text-center text-sm text-muted-foreground">
 						Already registered?
-						<button type="button" class="underline" onclick={() => ((mode = 'login'), (error = ''))}>
+						<button
+							type="button"
+							class="underline"
+							onclick={() => ((mode = 'login'), (error = ''))}
+						>
 							Log in to join
 						</button>
 					</p>
