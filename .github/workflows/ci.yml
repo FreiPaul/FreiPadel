@@ -62,8 +62,11 @@ jobs:
 
       # only-new-issues keeps the existing findings from blocking every PR
       # while holding new code to the full linter set.
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
+          # v6 pins golangci-lint v1, which refuses a go.mod newer than the Go
+          # version it was built with.
+          version: v2.13
           working-directory: backend
           only-new-issues: true
 
