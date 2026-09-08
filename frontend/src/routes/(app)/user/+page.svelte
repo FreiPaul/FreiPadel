@@ -10,7 +10,6 @@
 
 		let userEmail = $state<string>(auth.me?.user?.email ?? "");
 		let userSettings = $state<Settings | null>();
-		let saving = $state<boolean>(false);
 		let changingEmail = $state<boolean>(false);
 		let cancellingEmailChange = $state<boolean>(false);
 		let pendingEmailChange = $state<EmailChangeStatus | null>(null);
@@ -23,7 +22,6 @@
 
 		async function saveSettings() {
         if (!userSettings) return;
-        saving = true;
         try {
 						userSettings.notifications["slot_booked"] = slot_booked;
 						userSettings.notifications["poll_created"] = poll_created;
@@ -34,8 +32,6 @@
             toast.success("Settings saved");
         } catch (err) {
             toast.error(err instanceof Error ? err.message : "Could not save");
-        } finally {
-            saving = false;
         }
 	    }
 
