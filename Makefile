@@ -32,11 +32,16 @@ TAR_EXCLUDES = \
 	--exclude ./logic/venv \
 	--exclude ./logic/__pycache__
 
-.PHONY: check-production-env ship ship-local-build logs status local run-backend run-frontend test e2e e2e-install
+.PHONY: check-production-env lint ship ship-local-build logs status local run-backend run-frontend test e2e e2e-install
 
 test:
 	cd frontend && npm run check
 	cd backend && go test ./...
+
+lint:
+	cd frontend && npm run lint
+	cd backend && test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
+	cd backend && go vet ./...
 
 # End-to-end suite: builds the production image and drives the whole app
 # through a browser against a Mailpit inbox. Run `make e2e-install` once.

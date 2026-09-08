@@ -1,56 +1,52 @@
 <script lang="ts">
-    import { Input } from "$lib/components/ui/input";
-		import { api, type EmailChangeStatus, type Settings } from "$lib/api";
-    import { onMount } from "svelte";
-    import { toast } from "svelte-sonner";
-    import { auth } from "$lib/auth.svelte";
-		import { sync } from "$lib/sync.svelte";
-		import Button from "$lib/components/ui/button/button.svelte";
-    import Checkbox from "$lib/components/ui/checkbox/checkbox.svelte";
+	import { Input } from '$lib/components/ui/input';
+	import { api, type EmailChangeStatus, type Settings } from '$lib/api';
+	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
+	import { auth } from '$lib/auth.svelte';
+	import { sync } from '$lib/sync.svelte';
+	import Button from '$lib/components/ui/button/button.svelte';
+	import Checkbox from '$lib/components/ui/checkbox/checkbox.svelte';
 
-		let userEmail = $state<string>(auth.me?.user?.email ?? "");
-		let userSettings = $state<Settings | null>();
-		let saving = $state<boolean>(false);
-		let changingEmail = $state<boolean>(false);
-		let cancellingEmailChange = $state<boolean>(false);
-		let pendingEmailChange = $state<EmailChangeStatus | null>(null);
-		let slot_booked = $state<boolean>(false);
-		let poll_created = $state<boolean>(false);
+	let userEmail = $state<string>(auth.me?.user?.email ?? '');
+	let userSettings = $state<Settings | null>();
+	let changingEmail = $state<boolean>(false);
+	let cancellingEmailChange = $state<boolean>(false);
+	let pendingEmailChange = $state<EmailChangeStatus | null>(null);
+	let slot_booked = $state<boolean>(false);
+	let poll_created = $state<boolean>(false);
 
-    $effect(() => {
+	$effect(() => {
 		if (auth.me?.user) userEmail = auth.me.user.email;
-		});
+	});
 
-		async function saveSettings() {
-        if (!userSettings) return;
-        saving = true;
-        try {
-						userSettings.notifications["slot_booked"] = slot_booked;
-						userSettings.notifications["poll_created"] = poll_created;
-            userSettings = await api.put<Settings>("/api/settings", userSettings);
-            // Apply to the store right away instead of waiting for the SSE
-            // delta — the delta then confirms with identical content.
-            sync.settings = $state.snapshot(userSettings) as Settings;
-            toast.success("Settings saved");
-        } catch (err) {
-            toast.error(err instanceof Error ? err.message : "Could not save");
-        } finally {
-            saving = false;
-        }
-	    }
+	async function saveSettings() {
+		if (!userSettings) return;
+		try {
+			userSettings.notifications['slot_booked'] = slot_booked;
+			userSettings.notifications['poll_created'] = poll_created;
+			userSettings = await api.put<Settings>('/api/settings', userSettings);
+			// Apply to the store right away instead of waiting for the SSE
+			// delta — the delta then confirms with identical content.
+			sync.settings = $state.snapshot(userSettings) as Settings;
+			toast.success('Settings saved');
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Could not save');
+		}
+	}
 
 	async function requestEmailChange() {
 		changingEmail = true;
 		try {
-			pendingEmailChange = await api.post<EmailChangeStatus>("/api/auth/email-change", {
+			pendingEmailChange = await api.post<EmailChangeStatus>('/api/auth/email-change', {
 				new_email: userEmail,
 				origin: location.origin
 			});
-			toast.success("Confirmation email sent", {
+			toast.success('Confirmation email sent', {
 				description: `Open the message sent to ${pendingEmailChange.pending_email} to finish the change.`
 			});
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : "Could not request email change");
+			toast.error(err instanceof Error ? err.message : 'Could not request email change');
 		} finally {
 			changingEmail = false;
 		}
@@ -59,11 +55,11 @@
 	async function cancelEmailChange() {
 		cancellingEmailChange = true;
 		try {
-			await api.del<{ ok: boolean }>("/api/auth/email-change");
+			await api.del<{ ok: boolean }>('/api/auth/email-change');
 			pendingEmailChange = null;
-			toast.success("Pending email change cancelled");
+			toast.success('Pending email change cancelled');
 		} catch (err) {
-			toast.error(err instanceof Error ? err.message : "Could not cancel email change");
+			toast.error(err instanceof Error ? err.message : 'Could not cancel email change');
 		} finally {
 			cancellingEmailChange = false;
 		}
@@ -71,11 +67,11 @@
 
 	onMount(async () => {
 		[userSettings, pendingEmailChange] = await Promise.all([
-			api.get<Settings>("/api/settings"),
-			api.get<EmailChangeStatus>("/api/auth/email-change")
+			api.get<Settings>('/api/settings'),
+			api.get<EmailChangeStatus>('/api/auth/email-change')
 		]);
-		slot_booked = userSettings?.notifications["slot_booked"];
-		poll_created = userSettings?.notifications["poll_created"];
+		slot_booked = userSettings?.notifications['slot_booked'];
+		poll_created = userSettings?.notifications['poll_created'];
 	});
 </script>
 
@@ -100,22 +96,22 @@
 			/>
 			<Button
 				onclick={requestEmailChange}
-				disabled={
-					changingEmail ||
+				disabled={changingEmail ||
 					!auth.me?.emailer_enabled ||
 					!userEmail.trim() ||
-					userEmail.trim().toLowerCase() === auth.me?.user.email
-				}
+					userEmail.trim().toLowerCase() === auth.me?.user.email}
 			>
-				{changingEmail ? "Sending…" : "Change"}
+				{changingEmail ? 'Sending…' : 'Change'}
 			</Button>
 		</div>
 		{#if pendingEmailChange?.pending_email}
-			<div class="flex w-full flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/40 p-3 text-sm">
+			<div
+				class="flex w-full flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/40 p-3 text-sm"
+			>
 				<p>
 					Waiting for confirmation from
-					<span class="font-medium">{pendingEmailChange.pending_email}</span>.
-					Your current email remains unchanged.
+					<span class="font-medium">{pendingEmailChange.pending_email}</span>. Your current email
+					remains unchanged.
 				</p>
 				<Button
 					variant="outline"
@@ -123,7 +119,7 @@
 					onclick={cancelEmailChange}
 					disabled={cancellingEmailChange}
 				>
-					{cancellingEmailChange ? "Cancelling…" : "Cancel"}
+					{cancellingEmailChange ? 'Cancelling…' : 'Cancel'}
 				</Button>
 			</div>
 		{:else if auth.me && !auth.me.emailer_enabled}

@@ -11,7 +11,7 @@
 	import { formatTimestamp } from '$lib/format';
 	import { toast } from 'svelte-sonner';
 	import ClubAdmin from '$lib/components/ClubAdmin.svelte';
-    import Input from '$lib/components/ui/input/input.svelte';
+	import Input from '$lib/components/ui/input/input.svelte';
 
 	// The club switcher links straight to the Clubs tab.
 	let tab = $state(page.url.searchParams.get('tab') === 'clubs' ? 'clubs' : 'invites');
@@ -20,9 +20,7 @@
 	const clubs = $derived(myClubs());
 	let inviteClubId = $state<number | null>(null);
 	const targetClubId = $derived(inviteClubId ?? sync.activeClubId);
-	const targetClub = $derived(
-		targetClubId === null ? null : (sync.clubs[targetClubId] ?? null)
-	);
+	const targetClub = $derived(targetClubId === null ? null : (sync.clubs[targetClubId] ?? null));
 
 	// Rendered straight from the sync store — no fetching on navigation, and
 	// invites flip to "used" live when a friend registers.
@@ -68,7 +66,9 @@
 				await copy(token);
 			}
 		} catch (e) {
-			toast.error('Could not create invite', { description: e instanceof Error ? e.message : 'Unknown error' });
+			toast.error('Could not create invite', {
+				description: e instanceof Error ? e.message : 'Unknown error'
+			});
 		} finally {
 			inviting = false;
 		}
@@ -118,131 +118,142 @@
 		</Tabs.List>
 
 		<Tabs.Content value="invites" class="flex flex-col gap-6 pt-4">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<h2 class="text-lg font-medium">Invites</h2>
+					<p class="text-sm text-muted-foreground">
+						One-time links work for a single registration; group links keep working until you
+						disable them. Every invite joins the person to one club.
+					</p>
+				</div>
+				<div class="flex gap-2">
+					<Button variant="outline" onclick={() => createInvite('single')} disabled={inviting}>
+						+ One-time link
+					</Button>
+					<Button onclick={() => createInvite('group')} disabled={inviting}>+ Group link</Button>
+				</div>
+			</div>
 
-	<div class="flex flex-wrap items-center justify-between gap-3">
-		<div>
-			<h2 class="text-lg font-medium">Invites</h2>
-			<p class="text-sm text-muted-foreground">
-				One-time links work for a single registration; group links keep working until you disable
-				them. Every invite joins the person to one club.
-			</p>
-		</div>
-		<div class="flex gap-2">
-			<Button variant="outline" onclick={() => createInvite('single')} disabled={inviting}>
-				+ One-time link
-			</Button>
-			<Button onclick={() => createInvite('group')} disabled={inviting}>+ Group link</Button>
-		</div>
-	</div>
-
-	<!-- Which club new invites join people to. -->
-	<div class="flex flex-wrap items-center gap-2">
-		<span class="text-sm text-muted-foreground">Invite into</span>
-		{#each clubs as club (club.id)}
-			<button
-				type="button"
-				data-testid="invite-club"
-				class="rounded-full border px-3 py-1 text-xs transition-colors
+			<!-- Which club new invites join people to. -->
+			<div class="flex flex-wrap items-center gap-2">
+				<span class="text-sm text-muted-foreground">Invite into</span>
+				{#each clubs as club (club.id)}
+					<button
+						type="button"
+						data-testid="invite-club"
+						class="rounded-full border px-3 py-1 text-xs transition-colors
 					{club.id === targetClubId ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}"
-				onclick={() => (inviteClubId = club.id)}
-			>
-				{club.name}
-			</button>
-		{/each}
-		{#if targetClub === null}
-			<span class="text-xs text-destructive">Pick a club first.</span>
-		{/if}
-	</div>
+						onclick={() => (inviteClubId = club.id)}
+					>
+						{club.name}
+					</button>
+				{/each}
+				{#if targetClub === null}
+					<span class="text-xs text-destructive">Pick a club first.</span>
+				{/if}
+			</div>
 
-	<Card.Root>
-		<Card.Content class="flex flex-col divide-y">
-			{#if invites.length === 0}
-				<p class="py-6 text-center text-sm text-muted-foreground">
-					No invites yet. Create one and send the link to a friend.
-				</p>
-			{/if}
-			{#each invites as invite (invite.token)}
-				<div class="flex flex-wrap items-center gap-2 py-2.5 first:pt-0 last:pb-0">
-					<code class="truncate text-xs text-muted-foreground">…{invite.token.slice(-8)}</code>
-					<Badge variant="outline">{invite.club_name}</Badge>
-					{#if invite.kind === 'group'}
-						<Badge variant="outline">👥 group</Badge>
-						{#if invite.disabled}
-							<Badge variant="secondary" class="opacity-70">disabled</Badge>
-						{:else}
-							<Badge>active</Badge>
-						{/if}
-						<span class="text-xs text-muted-foreground">
-							{invite.uses}
-							{invite.uses === 1 ? 'registration' : 'registrations'}
-						</span>
-						<div class="ml-auto flex gap-1.5">
-							{#if !invite.disabled}
-								<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
-									Copy link
-								</Button>
-								<Button size="sm" variant="ghost" onclick={() => disable(invite.token)}>
-									Disable
-								</Button>
+			<Card.Root>
+				<Card.Content class="flex flex-col divide-y">
+					{#if invites.length === 0}
+						<p class="py-6 text-center text-sm text-muted-foreground">
+							No invites yet. Create one and send the link to a friend.
+						</p>
+					{/if}
+					{#each invites as invite (invite.token)}
+						<div class="flex flex-wrap items-center gap-2 py-2.5 first:pt-0 last:pb-0">
+							<code class="truncate text-xs text-muted-foreground">…{invite.token.slice(-8)}</code>
+							<Badge variant="outline">{invite.club_name}</Badge>
+							{#if invite.kind === 'group'}
+								<Badge variant="outline">👥 group</Badge>
+								{#if invite.disabled}
+									<Badge variant="secondary" class="opacity-70">disabled</Badge>
+								{:else}
+									<Badge>active</Badge>
+								{/if}
+								<span class="text-xs text-muted-foreground">
+									{invite.uses}
+									{invite.uses === 1 ? 'registration' : 'registrations'}
+								</span>
+								<div class="ml-auto flex gap-1.5">
+									{#if !invite.disabled}
+										<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
+											Copy link
+										</Button>
+										<Button size="sm" variant="ghost" onclick={() => disable(invite.token)}>
+											Disable
+										</Button>
+									{:else}
+										<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}
+											>Delete</Button
+										>
+									{/if}
+								</div>
 							{:else}
-								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
+								{#if invite.kind === 'email'}
+									<Badge variant="outline">email</Badge>
+									<span class="text-xs text-muted-foreground">{invite.email}</span>
+								{/if}
+								{#if invite.used_by}
+									<Badge variant="secondary">used by {invite.used_by}</Badge>
+									<span class="text-xs text-muted-foreground"
+										>{formatTimestamp(invite.used_at ?? '')}</span
+									>
+								{:else if invite.disabled}
+									<Badge variant="secondary" class="opacity-70">disabled</Badge>
+									<div class="ml-auto">
+										<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}
+											>Delete</Button
+										>
+									</div>
+								{:else}
+									<Badge>open</Badge>
+									<div class="ml-auto flex gap-1.5">
+										<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
+											Copy link
+										</Button>
+										<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}
+											>Revoke</Button
+										>
+									</div>
+								{/if}
 							{/if}
 						</div>
-					{:else}
-						{#if invite.kind === 'email'}
-							<Badge variant="outline">email</Badge>
-							<span class="text-xs text-muted-foreground">{invite.email}</span>
-						{/if}
-						{#if invite.used_by}
-							<Badge variant="secondary">used by {invite.used_by}</Badge>
-							<span class="text-xs text-muted-foreground">{formatTimestamp(invite.used_at ?? '')}</span>
-						{:else if invite.disabled}
-							<Badge variant="secondary" class="opacity-70">disabled</Badge>
-							<div class="ml-auto">
-								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Delete</Button>
-							</div>
-						{:else}
-							<Badge>open</Badge>
-							<div class="ml-auto flex gap-1.5">
-								<Button size="sm" variant="outline" onclick={() => copy(invite.token)}>
-									Copy link
-								</Button>
-								<Button size="sm" variant="ghost" onclick={() => revoke(invite.token)}>Revoke</Button>
-							</div>
-						{/if}
-					{/if}
-				</div>
-			{/each}
-		</Card.Content>
-	</Card.Root>
+					{/each}
+				</Card.Content>
+			</Card.Root>
 
-	<Separator />
+			<Separator />
 
-	{#if emailer_enabled}
-	<Card.Root>
-	<Card.CardContent>
-	<h3>Invite a member via e-mail. An email will be sent automatically and the invite link is only valid for the email.</h3>
-	<div class="flex gap-2 align-middle">
-        <Input
-            id="email"
-            placeholder="E-Mail"
-            bind:value={invite_email}
-			onkeydown={(e) => {
-				if (e.key === 'Enter') {
-					e.preventDefault();
-					createInvite("email",invite_email);
-				}
-			}}
-        >
-        </Input>
-        <Button
-            onclick={() => {createInvite("email",invite_email)}}
-            disabled={inviting}>Invite member</Button>
-	</div>
-	</Card.CardContent>
-	</Card.Root>
-	{/if}
-
+			{#if emailer_enabled}
+				<Card.Root>
+					<Card.CardContent>
+						<h3>
+							Invite a member via e-mail. An email will be sent automatically and the invite link is
+							only valid for the email.
+						</h3>
+						<div class="flex gap-2 align-middle">
+							<Input
+								id="email"
+								placeholder="E-Mail"
+								bind:value={invite_email}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') {
+										e.preventDefault();
+										createInvite('email', invite_email);
+									}
+								}}
+							></Input>
+							<Button
+								onclick={() => {
+									createInvite('email', invite_email);
+								}}
+								disabled={inviting}>Invite member</Button
+							>
+						</div>
+					</Card.CardContent>
+				</Card.Root>
+			{/if}
 		</Tabs.Content>
 
 		<Tabs.Content value="clubs" class="pt-4">

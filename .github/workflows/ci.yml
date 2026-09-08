@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: frontend (check + build)
+    name: frontend (lint + check + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,13 +32,16 @@ jobs:
 
       - run: npm ci
 
+      # prettier --check plus eslint.
+      - run: npm run lint
+
       # svelte-kit sync + svelte-check. Warnings do not fail the build yet.
       - run: npm run check
 
       - run: npm run build
 
   backend:
-    name: backend (vet + test)
+    name: backend (lint + test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -56,6 +59,16 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
 
       - run: go vet ./...
+
+      # only-new-issues keeps the existing findings from blocking every PR
+      # while holding new code to the full linter set.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          # v6 pins golangci-lint v1, which refuses a go.mod newer than the Go
+          # version it was built with.
+          version: v2.13
+          working-directory: backend
+          only-new-issues: true
 
       # SQLite is pure Go here, so the race detector costs almost nothing.
       - run: go test -race ./...
