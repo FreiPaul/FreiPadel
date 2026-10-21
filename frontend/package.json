@@ -18,9 +18,9 @@
 		"@fontsource-variable/source-sans-3": "^5.3.1",
 		"@internationalized/date": "^3.12.4",
 		"@lucide/svelte": "^1.59.0",
-		"@sveltejs/adapter-auto": "^7.0.1",
-		"@sveltejs/adapter-static": "^3.0.10",
-		"@sveltejs/kit": "^2.57.0",
+		"@sveltejs/adapter-static": "^4.0.0",
+		"@sveltejs/kit": "^3.0.0",
+		"@sveltejs/load-config": "^0.2.2",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@tailwindcss/vite": "^4.3.3",
 		"@types/node": "^26.6.5",
@@ -44,5 +44,9 @@
 		"typescript": "^6.0.2",
 		"typescript-eslint": "^8.71.2",
 		"vite": "^8.3.4"
+	},
+	"imports": {
+		"#lib": "./src/lib/index.js",
+		"#lib/*": "./src/lib/*"
 	}
 }

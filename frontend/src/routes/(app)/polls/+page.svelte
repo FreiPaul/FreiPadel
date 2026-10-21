@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { PLAYERS_NEEDED } from '$lib/api';
-	import { auth } from '$lib/auth.svelte';
+	import { PLAYERS_NEEDED } from '#lib/api.js';
+	import { auth } from '#lib/auth.svelte.js';
 	import {
 		castVote,
 		clubPolls,
@@ -13,14 +13,14 @@
 		type SyncPoll,
 		type SyncPollSlot,
 		type SyncVote
-	} from '$lib/sync.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import * as Dialog from '$lib/components/ui/dialog';
-	import { Separator } from '$lib/components/ui/separator';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { formatDate, formatTimeRange, getWeekNumber, formatWeekDiff } from '$lib/format';
+	} from '#lib/sync.svelte.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import { Separator } from '#lib/components/ui/separator/index.js';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
+	import { formatDate, formatTimeRange, getWeekNumber, formatWeekDiff } from '#lib/format.js';
 	import { toast } from 'svelte-sonner';
 
 	// View models: sync entities enriched with the fields the markup needs,

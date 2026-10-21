@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { Input } from '$lib/components/ui/input';
-	import { api, type EmailChangeStatus, type Settings } from '$lib/api';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { api, type EmailChangeStatus, type Settings } from '#lib/api.js';
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import { auth } from '$lib/auth.svelte';
-	import { sync } from '$lib/sync.svelte';
-	import Button from '$lib/components/ui/button/button.svelte';
-	import Checkbox from '$lib/components/ui/checkbox/checkbox.svelte';
+	import { auth } from '#lib/auth.svelte.js';
+	import { sync } from '#lib/sync.svelte.js';
+	import Button from '#lib/components/ui/button/button.svelte';
+	import Checkbox from '#lib/components/ui/checkbox/checkbox.svelte';
 
 	let userEmail = $state<string>(auth.me?.user?.email ?? '');
 	let userSettings = $state<Settings | null>();

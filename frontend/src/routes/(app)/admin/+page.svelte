@@ -1,17 +1,17 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api } from '$lib/api';
-	import { auth } from '$lib/auth.svelte';
-	import { myClubs, sync } from '$lib/sync.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import * as Tabs from '$lib/components/ui/tabs';
-	import { Separator } from '$lib/components/ui/separator';
-	import { formatTimestamp } from '$lib/format';
+	import { api } from '#lib/api.js';
+	import { auth } from '#lib/auth.svelte.js';
+	import { myClubs, sync } from '#lib/sync.svelte.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
+	import * as Tabs from '#lib/components/ui/tabs/index.js';
+	import { Separator } from '#lib/components/ui/separator/index.js';
+	import { formatTimestamp } from '#lib/format.js';
 	import { toast } from 'svelte-sonner';
-	import ClubAdmin from '$lib/components/ClubAdmin.svelte';
-	import Input from '$lib/components/ui/input/input.svelte';
+	import ClubAdmin from '#lib/components/ClubAdmin.svelte';
+	import Input from '#lib/components/ui/input/input.svelte';
 
 	// The club switcher links straight to the Clubs tab.
 	let tab = $state(page.url.searchParams.get('tab') === 'clubs' ? 'clubs' : 'invites');

@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { auth, loadUser, logout } from '$lib/auth.svelte';
-	import { activePollCount, startSync, stopSync, sync } from '$lib/sync.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import { Separator } from '$lib/components/ui/separator';
-	import ClubSwitcher from '$lib/components/ClubSwitcher.svelte';
-	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+	import { auth, loadUser, logout } from '#lib/auth.svelte.js';
+	import { activePollCount, startSync, stopSync, sync } from '#lib/sync.svelte.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Separator } from '#lib/components/ui/separator/index.js';
+	import ClubSwitcher from '#lib/components/ClubSwitcher.svelte';
+	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 
 	let { children } = $props();
 

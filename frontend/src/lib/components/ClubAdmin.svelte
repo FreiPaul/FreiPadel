@@ -2,14 +2,14 @@
 	// Club administration. Deliberately fetched over REST rather than fed by
 	// the sync store: clubs change rarely, and nobody needs to watch the
 	// administration page update live.
-	import { api, type AdminClub, type Member } from '$lib/api';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { Separator } from '$lib/components/ui/separator';
-	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { api, type AdminClub, type Member } from '#lib/api.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import { Separator } from '#lib/components/ui/separator/index.js';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { toast } from 'svelte-sonner';
 	import { onMount } from 'svelte';
 

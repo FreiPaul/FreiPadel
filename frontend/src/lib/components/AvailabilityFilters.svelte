@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { api, type Settings } from '$lib/api';
-	import { sync } from '$lib/sync.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { api, type Settings } from '#lib/api.js';
+	import { sync } from '#lib/sync.svelte.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { toast } from 'svelte-sonner';
 
 	let { onSaved }: { onSaved?: () => void } = $props();
