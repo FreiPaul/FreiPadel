@@ -72,7 +72,7 @@ ship: check-production-env
 	ssh $(SHIP_HOST) 'mv $(SHIP_DIR)/docker-compose-prod.yml $(SHIP_DIR)/docker-compose.yml'
 	@echo "→ building & starting on $(SHIP_HOST)"
 	ssh $(SHIP_HOST) '$(BACKUP_CMD)'
-	ssh $(SHIP_HOST) 'cd $(SHIP_DIR) && docker compose up -d --build'
+	ssh $(SHIP_HOST) 'cd $(SHIP_DIR) && docker compose build --pull && docker compose up -d'
 	@echo "✅ shipped — http://$(SHIP_HOST):8080"
 
 # Build the image locally (natively cross-compiled to linux/amd64 — see the
@@ -81,7 +81,7 @@ ship: check-production-env
 # directory is never touched.
 ship-local-build: check-production-env
 	@echo "→ building linux/amd64 image locally"
-	docker buildx build --platform linux/amd64 -t freipadel:latest --load .
+	docker buildx build --pull --platform linux/amd64 -t freipadel:latest --load .
 	@echo "→ syncing production environment and compose config to $(SHIP_HOST):$(SHIP_DIR)"
 	ssh $(SHIP_HOST) 'mkdir -p $(SHIP_DIR)/data'
 	scp docker-compose-prod.yml $(SHIP_HOST):$(SHIP_DIR)/docker-compose.yml
