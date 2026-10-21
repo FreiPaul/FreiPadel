@@ -16,6 +16,10 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # Kit and its adapters move together across majors (adapter-static 4
+      # needs Kit 3), so they share one PR including major bumps.
+      svelte:
+        patterns: [svelte, svelte-*, "@sveltejs/*"]
       npm:
         update-types: [minor, patch]
 
