@@ -21,9 +21,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # Keep in sync with the node:22-alpine stage in the Dockerfile.
           node-version: 22
@@ -47,9 +47,9 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod is the single source of truth for the toolchain version.
           go-version-file: backend/go.mod
@@ -81,9 +81,9 @@ jobs:
       run:
         working-directory: e2e
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -102,7 +102,7 @@ jobs:
         if: failure()
         run: cat .tmp/containers.log || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: e2e-report
