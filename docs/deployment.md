@@ -18,6 +18,24 @@ missing.
 Do not put credentials into `docker-compose-prod.yml`. `.env` files are
 excluded from both the source archive and the Docker build context.
 
+## Container hardening
+
+In production the container runs without root, as the user that owns
+`/opt/freipadel/data` on the server (normally the ssh user). Both ship targets
+write that uid into `/opt/freipadel/.env` and stop if a file in `data/`
+belongs to someone else. Before the first ship with this setup, hand the
+directory over once on the server (the old container ran as root and created
+the db as root):
+
+```sh
+sudo chown -R "$(id -u):$(id -g)" /opt/freipadel/data
+```
+
+The container also has a read-only root filesystem (only `/data` and a small
+`/tmp` are writable), no Linux capabilities, `no-new-privileges` and memory
+and process limits. The Go server sets read, write and idle timeouts; the SSE
+stream lifts them for its own connection.
+
 ## Shipping
 
 ```sh

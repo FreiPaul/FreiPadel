@@ -9,6 +9,22 @@ services:
     image: freipadel:latest
     container_name: freipadel
     restart: unless-stopped
+    # Run as the owner of the server's ./data directory. The Makefile writes
+    # FREIPADEL_UID/GID into .env next to this file on every ship.
+    user: "${FREIPADEL_UID:-10001}:${FREIPADEL_GID:-10001}"
+    # Hardening: the root filesystem is read-only (only /data and a small
+    # /tmp are writable), no Linux capabilities, no privilege escalation via
+    # setuid binaries, and limits so a runaway process cannot take the host
+    # down with it.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 200
     ports:
       - "8080:8080"
     volumes:

@@ -251,9 +251,37 @@ func main() {
 	mux.Handle("/", spaHandler(staticDir))
 
 	log.Printf("FreiPadel listening on :%s (data: %s, static: %s)", port, dataDir, staticDir)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := newHTTPServer(":"+port, mux).ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// newHTTPServer wraps the handler in an http.Server with timeouts, so slow or
+// idle clients cannot hold connections (and goroutines) open forever. The
+// bare http.ListenAndServe has no timeouts at all.
+//
+// The SSE stream (/api/sync/events) is long-lived on purpose; its handler
+// lifts the read and write deadlines for its own connection, see
+// disableDeadlines.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
+// disableDeadlines removes the server's read and write deadlines for this one
+// connection. Only for streaming handlers: without it, ReadTimeout cancels the
+// request context and WriteTimeout breaks the stream.
+func disableDeadlines(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
+	_ = rc.SetWriteDeadline(time.Time{})
 }
 
 // spaHandler serves files from dir, falling back to index.html for

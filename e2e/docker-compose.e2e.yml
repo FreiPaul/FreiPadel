@@ -36,7 +36,8 @@ services:
     volumes:
       - data:/data
       - ./fixtures:/fixtures:ro
-    command: ["sh", "-c", "cp /fixtures/config.json /data/config.json"]
+    # chown: the app runs as uid 10001 and must be able to write /data.
+    command: ["sh", "-c", "cp /fixtures/config.json /data/config.json && chown -R 10001:10001 /data"]
 
   app:
     build:
