@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, type SlotGroup } from '$lib/api';
-	import { ensureSlots, sync } from '$lib/sync.svelte';
-	import AvailabilityFilters from '$lib/components/AvailabilityFilters.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import { Input } from '$lib/components/ui/input';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { formatDate, formatTimeRange, formatTimestamp } from '$lib/format';
+	import { api, type SlotGroup } from '#lib/api.js';
+	import { ensureSlots, sync } from '#lib/sync.svelte.js';
+	import AvailabilityFilters from '#lib/components/AvailabilityFilters.svelte';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
+	import { formatDate, formatTimeRange, formatTimestamp } from '#lib/format.js';
 	import { toast } from 'svelte-sonner';
 
 	let showFilters = $state(false);

@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { api, ApiError, type Me } from '$lib/api';
-	import { auth } from '$lib/auth.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
+	import { api, ApiError, type Me } from '#lib/api.js';
+	import { auth } from '#lib/auth.svelte.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
 	import { page } from '$app/state';
 
 	let email = $state('');
@@ -31,8 +31,9 @@
 				password
 			});
 			auth.loaded = true;
-			const destination = redirectTo || '/slots';
-			await goto(destination);
+			// redirect_to comes from the URL, and goto rejects anything that is
+			// not an app route, so fall back instead of reporting a failed login.
+			await goto(redirectTo || '/slots').catch(() => goto('/slots'));
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Login failed';
 		} finally {

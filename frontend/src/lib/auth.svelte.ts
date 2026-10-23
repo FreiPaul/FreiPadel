@@ -1,4 +1,4 @@
-import { api, type Me } from '$lib/api';
+import { api, type Me } from '#lib/api.js';
 
 // Global auth state (Svelte 5 runes module).
 export const auth = $state<{ me: Me | null; loaded: boolean }>({

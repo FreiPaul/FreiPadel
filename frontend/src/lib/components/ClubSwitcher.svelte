@@ -3,11 +3,11 @@
 	// of polls still open in it, so the badge answers "where is something
 	// waiting for me?" without opening each club in turn.
 	import { goto } from '$app/navigation';
-	import { auth } from '$lib/auth.svelte';
-	import { activePollCount, myClubs, switchClub, sync } from '$lib/sync.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import { auth } from '#lib/auth.svelte.js';
+	import { activePollCount, myClubs, switchClub, sync } from '#lib/sync.svelte.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { toast } from 'svelte-sonner';
 
 	const clubs = $derived(myClubs());

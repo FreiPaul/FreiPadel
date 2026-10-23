@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, ApiError } from '$lib/api';
-	import { auth, loadUser } from '$lib/auth.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
+	import { api, ApiError } from '#lib/api.js';
+	import { auth, loadUser } from '#lib/auth.svelte.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Card from '#lib/components/ui/card/index.js';
 
 	const token = $derived(page.url.searchParams.get('token') ?? '');
 	let confirming = $state(false);
