@@ -16,6 +16,17 @@ REMOTE_PROD_ENV := $(SHIP_DIR)/data/production.env
 TS := $(shell date +%Y%m%d-%H%M%S)
 BACKUP_CMD = if [ -f $(SHIP_DIR)/data/freipadel.db ]; then sqlite3 $(SHIP_DIR)/data/freipadel.db ".backup $(SHIP_DIR)/data/freipadel-bkp-$(TS).db"; else echo "  (no db on $(SHIP_HOST) yet — fresh server, skipping backup)"; fi
 
+# The container runs as the user that owns the server's ./data directory
+# (the ssh user), so the db stays writable for the app and readable for the
+# backup above. Writes FREIPADEL_UID/GID into .env for docker compose and
+# stops if files in ./data belong to someone else (old root-owned db).
+# Shipping as root falls back to uid 10001 and hands ./data to it.
+RUNAS_CMD = cd $(SHIP_DIR) && u=$$(id -u) && g=$$(id -g) && \
+	if [ "$$u" = 0 ]; then u=10001; g=10001; chown -R $$u:$$g data; fi && \
+	bad=$$(find data ! -user $$u -print -quit) && \
+	if [ -n "$$bad" ]; then echo "$$bad does not belong to uid $$u. Run once on the server: sudo chown -R $$u:$$g $(SHIP_DIR)/data" >&2; exit 1; fi && \
+	printf "FREIPADEL_UID=%s\nFREIPADEL_GID=%s\n" $$u $$g > .env
+
 TAR_EXCLUDES = \
 	--exclude ./.git \
 	--exclude ./.claude \
@@ -70,6 +81,7 @@ ship: check-production-env
 	scp "$(PROD_ENV)" $(SHIP_HOST):$(REMOTE_PROD_ENV).tmp
 	ssh $(SHIP_HOST) 'chmod 600 $(REMOTE_PROD_ENV).tmp && mv $(REMOTE_PROD_ENV).tmp $(REMOTE_PROD_ENV)'
 	ssh $(SHIP_HOST) 'mv $(SHIP_DIR)/docker-compose-prod.yml $(SHIP_DIR)/docker-compose.yml'
+	ssh $(SHIP_HOST) '$(RUNAS_CMD)'
 	@echo "→ building & starting on $(SHIP_HOST)"
 	ssh $(SHIP_HOST) '$(BACKUP_CMD)'
 	ssh $(SHIP_HOST) 'cd $(SHIP_DIR) && docker compose build --pull && docker compose up -d'
@@ -87,6 +99,7 @@ ship-local-build: check-production-env
 	scp docker-compose-prod.yml $(SHIP_HOST):$(SHIP_DIR)/docker-compose.yml
 	scp "$(PROD_ENV)" $(SHIP_HOST):$(REMOTE_PROD_ENV).tmp
 	ssh $(SHIP_HOST) 'chmod 600 $(REMOTE_PROD_ENV).tmp && mv $(REMOTE_PROD_ENV).tmp $(REMOTE_PROD_ENV)'
+	ssh $(SHIP_HOST) '$(RUNAS_CMD)'
 	@echo "→ shipping image (docker save | ssh | docker load)"
 	docker save freipadel:latest | gzip | ssh $(SHIP_HOST) 'gunzip | docker load'
 	@echo "→ backing up db & starting on $(SHIP_HOST)"

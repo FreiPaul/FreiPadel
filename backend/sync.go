@@ -496,6 +496,8 @@ func (a *App) handleSyncEvents(w http.ResponseWriter, r *http.Request, u *User) 
 		httpError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+	// The stream outlives the server's Read/WriteTimeout by design.
+	disableDeadlines(w)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no") // no buffering in nginx-style proxies

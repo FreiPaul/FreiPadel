@@ -20,11 +20,20 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /freipadel .
 
 # ---- Runtime ----
-FROM alpine:3
-RUN apk add --no-cache ca-certificates
+# Pinned minor version, so a rebuild never jumps to a new Alpine release
+# unnoticed (Dependabot bumps it).
+FROM alpine:3.24
+RUN apk add --no-cache ca-certificates \
+ && mkdir /data && chown 10001:10001 /data
 WORKDIR /app
 COPY --from=backend /freipadel ./freipadel
 COPY --from=frontend /app/build ./static
+
+# Run without root. The binary and static files stay owned by root, so the
+# process cannot modify them; only /data must be writable for this user.
+# Production overrides the uid with the owner of the server's ./data
+# directory (see docker-compose-prod.yml and the Makefile).
+USER 10001:10001
 
 ENV DATA_DIR=/data \
     STATIC_DIR=/app/static \
