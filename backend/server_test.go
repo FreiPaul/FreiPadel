@@ -25,7 +25,9 @@ func streamFor(t *testing.T, lift bool) int {
 				return
 			case <-time.After(100 * time.Millisecond):
 			}
-			fmt.Fprintf(w, "data: %d\n\n", i)
+			if _, err := fmt.Fprintf(w, "data: %d\n\n", i); err != nil {
+				return
+			}
 			w.(http.Flusher).Flush()
 		}
 	})
@@ -39,14 +41,14 @@ func streamFor(t *testing.T, lift bool) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go srv.Serve(ln)
-	defer srv.Close()
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
 
 	resp, err := http.Get("http://" + ln.Addr().String() + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	ticks := 0
 	sc := bufio.NewScanner(resp.Body)
