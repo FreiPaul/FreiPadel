@@ -25,8 +25,8 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # Keep in sync with the node:22-alpine stage in the Dockerfile.
-          node-version: 22
+          # Keep in sync with the node:25-alpine stage in the Dockerfile.
+          node-version: 25
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -85,7 +85,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 25
           cache: npm
           cache-dependency-path: e2e/package-lock.json
 
