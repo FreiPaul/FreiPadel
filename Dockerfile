@@ -1,7 +1,7 @@
 # ---- Frontend build ----
 # --platform=$BUILDPLATFORM pins this stage to the *builder's* native arch so
 # npm runs without emulation; its output (JS) is architecture-independent.
-FROM --platform=$BUILDPLATFORM node:25-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
