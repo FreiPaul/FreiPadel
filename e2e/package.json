@@ -15,10 +15,10 @@
     "screenshots": "SCREENSHOTS=1 playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.64.1",
+    "@playwright/test": "^1.65.1",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.6.5",
-    "better-sqlite3": "^13.0.3",
+    "@types/node": "^26.6.6",
+    "better-sqlite3": "^13.2.0",
     "typescript": "^7.0.2"
   }
 }
